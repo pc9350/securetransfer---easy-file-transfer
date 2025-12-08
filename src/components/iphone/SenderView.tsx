@@ -11,7 +11,7 @@ import { FileList } from '../shared/FileItem';
 import { ProgressBar } from '../shared/ProgressBar';
 import { EnterPINModal } from '../security/EnterPINModal';
 import { useToast } from '../shared/Toast';
-import { formatFileSize, formatSpeed, formatTimeRemaining, generateImagePreview, validateFile } from '../../utils/fileValidation';
+import { formatFileSize, formatSpeed, formatTimeRemaining } from '../../utils/fileValidation';
 import { isValidRoomCodeFormat, normalizeRoomCode, formatRoomCode } from '../../utils/security';
 import { generateFileId } from '../../utils/fileValidation';
 
@@ -33,6 +33,7 @@ export function SenderView() {
   
   // Files state
   const [selectedFiles, setSelectedFiles] = useState<FileWithPreview[]>([]);
+  const [isLoadingFiles, setIsLoadingFiles] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Handle PIN required
@@ -111,6 +112,24 @@ export function SenderView() {
   // Ref to hold the latest handleConnect function
   const handleConnectRef = useRef(handleConnect);
   handleConnectRef.current = handleConnect;
+
+  // Track if we've attempted auto-connect from URL
+  const autoConnectAttempted = useRef(false);
+
+  // Auto-connect if room code is in URL (from QR scan with native camera)
+  useEffect(() => {
+    const urlRoomCode = searchParams.get('room');
+    if (urlRoomCode && !autoConnectAttempted.current && !isConnected && connectionInfo.state === 'idle') {
+      autoConnectAttempted.current = true;
+      const normalized = normalizeRoomCode(urlRoomCode);
+      if (isValidRoomCodeFormat(normalized)) {
+        // Small delay to let UI render first
+        setTimeout(() => {
+          handleConnectRef.current(normalized);
+        }, 500);
+      }
+    }
+  }, [searchParams, isConnected, connectionInfo.state]);
 
   // Track if QR scanner has been initialized
   const scannerInitialized = useRef(false);
@@ -216,49 +235,54 @@ export function SenderView() {
     };
   }, [showScanner]);
 
-  // Handle file selection
-  const handleFileSelect = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []);
+  // Handle file selection - optimized for iOS speed
+  const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const fileList = e.target.files;
+    if (!fileList || fileList.length === 0) return;
     
-    const filesWithPreview: FileWithPreview[] = await Promise.all(
-      files.map(async (file) => {
-        const id = generateFileId();
-        const validationResult = await validateFile(file);
+    // Show loading immediately - iOS file picker can be slow
+    setIsLoadingFiles(true);
+    
+    // Use setTimeout to let the UI update before processing
+    setTimeout(() => {
+      const files = Array.from(fileList);
+      const processedFiles: FileWithPreview[] = [];
+      const skippedCount = { value: 0 };
+      
+      // Process files - minimal work, no object URLs yet
+      for (const file of files) {
+        // Quick validation
+        const ext = file.name.split('.').pop()?.toLowerCase() || '';
+        const blocked = ['exe', 'bat', 'cmd', 'sh', 'ps1', 'msi', 'dll', 'scr', 'js', 'vbs'];
         
-        let preview: string | undefined;
-        if (file.type.startsWith('image/')) {
-          try {
-            preview = await generateImagePreview(file);
-          } catch {
-            // Ignore preview errors
-          }
+        if (file.size > 2 * 1024 * 1024 * 1024 || file.size === 0 || blocked.includes(ext)) {
+          skippedCount.value++;
+          continue;
         }
         
-        return Object.assign(file, {
-          id,
-          preview,
-          validationResult,
-        }) as FileWithPreview;
-      })
-    );
-
-    // Filter out invalid files and show warnings
-    const validFiles = filesWithPreview.filter(f => f.validationResult?.isValid !== false);
-    const invalidFiles = filesWithPreview.filter(f => f.validationResult?.isValid === false);
-
-    if (invalidFiles.length > 0) {
-      toast.warning(
-        `${invalidFiles.length} file(s) skipped`,
-        'Some files were not added due to validation errors'
-      );
-    }
-
-    setSelectedFiles(prev => [...prev, ...validFiles]);
-    
-    // Reset input
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
+        // Create minimal file wrapper - NO preview URL here
+        // The preview will be created lazily in the FileList component
+        const fileWithPreview: FileWithPreview = Object.assign(file, {
+          id: generateFileId(),
+          preview: undefined, // Lazy load later
+          validationResult: { isValid: true, errors: [], warnings: [] },
+        });
+        
+        processedFiles.push(fileWithPreview);
+      }
+      
+      if (skippedCount.value > 0) {
+        toast.warning(`${skippedCount.value} file(s) skipped`, 'Some files were too large or invalid');
+      }
+      
+      setSelectedFiles(prev => [...prev, ...processedFiles]);
+      setIsLoadingFiles(false);
+      
+      // Reset input
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }, 10); // Small delay to show loading state
   }, [toast]);
 
   // Handle file removal
@@ -321,7 +345,41 @@ export function SenderView() {
 
       {/* Main content */}
       <div className="glass-card">
-        {!isConnected ? (
+        {/* Error State */}
+        {connectionInfo.state === 'error' && (
+          <div className="text-center py-8">
+            <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-red-500/10 flex items-center justify-center">
+              <svg className="w-8 h-8 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+            </div>
+            <h3 className="text-lg font-medium text-slate-200 mb-2">Connection Failed</h3>
+            <p className="text-danger-400 text-sm mb-2">{connectionInfo.error}</p>
+            <p className="text-slate-500 text-sm mb-6">Please check the room code and try again.</p>
+            <Button onClick={() => window.location.reload()} variant="primary">
+              Try Again
+            </Button>
+          </div>
+        )}
+
+        {/* Disconnected State */}
+        {connectionInfo.state === 'disconnected' && (
+          <div className="text-center py-8">
+            <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-slate-700 flex items-center justify-center">
+              <svg className="w-8 h-8 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 5.636a9 9 0 010 12.728m0 0l-2.829-2.829m2.829 2.829L21 21M15.536 8.464a5 5 0 010 7.072m0 0l-2.829-2.829m-4.243 2.829a4.978 4.978 0 01-1.414-2.83m-1.414 5.658a9 9 0 01-2.167-9.238m7.824 2.167a1 1 0 111.414 1.414m-1.414-1.414L3 3" />
+              </svg>
+            </div>
+            <h3 className="text-lg font-medium text-slate-200 mb-2">Disconnected</h3>
+            <p className="text-slate-500 text-sm mb-6">The connection to the receiver was lost.</p>
+            <Button onClick={() => window.location.reload()} variant="primary">
+              Connect Again
+            </Button>
+          </div>
+        )}
+
+        {/* Normal Connection Flow */}
+        {connectionInfo.state !== 'error' && connectionInfo.state !== 'disconnected' && !isConnected ? (
           // Connection UI
           <div className="space-y-6">
             {/* Connection Status */}
@@ -427,14 +485,8 @@ export function SenderView() {
               )}
             </div>
 
-            {/* Error */}
-            {connectionInfo.error && (
-              <div className="p-4 bg-danger-500/10 border border-danger-500/30 rounded-xl">
-                <p className="text-sm text-danger-400">{connectionInfo.error}</p>
-              </div>
-            )}
           </div>
-        ) : (
+        ) : isConnected ? (
           // File selection and transfer UI
           <div className="space-y-6">
             {/* Connection Status */}
@@ -459,19 +511,34 @@ export function SenderView() {
               onChange={handleFileSelect}
               className="hidden"
               id="file-input"
+              disabled={isLoadingFiles}
             />
 
             {/* Select Files Button */}
             {!isSending && (
               <label
                 htmlFor="file-input"
-                className="flex flex-col items-center justify-center w-full h-40 border-2 border-dashed border-slate-700 rounded-xl cursor-pointer hover:border-primary-500/50 hover:bg-slate-800/30 transition-all"
+                className={`flex flex-col items-center justify-center w-full h-40 border-2 border-dashed border-slate-700 rounded-xl transition-all ${
+                  isLoadingFiles 
+                    ? 'cursor-wait bg-slate-800/50' 
+                    : 'cursor-pointer hover:border-primary-500/50 hover:bg-slate-800/30'
+                }`}
               >
-                <svg className="w-10 h-10 text-slate-500 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-                </svg>
-                <span className="text-slate-400">Tap to select files</span>
-                <span className="text-xs text-slate-500 mt-1">Photos, videos, documents</span>
+                {isLoadingFiles ? (
+                  <>
+                    <div className="w-10 h-10 border-2 border-primary-500 border-t-transparent rounded-full animate-spin mb-2" />
+                    <span className="text-sm text-slate-400">Processing files...</span>
+                    <span className="text-xs text-slate-500 mt-1">This may take a moment on iOS</span>
+                  </>
+                ) : (
+                  <>
+                    <svg className="w-10 h-10 text-slate-500 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                    </svg>
+                    <span className="text-slate-400">Tap to select files</span>
+                    <span className="text-xs text-slate-500 mt-1">Photos, videos, documents</span>
+                  </>
+                )}
               </label>
             )}
 
@@ -556,7 +623,7 @@ export function SenderView() {
               </Button>
             )}
           </div>
-        )}
+        ) : null}
       </div>
 
       {/* PIN Modal */}
