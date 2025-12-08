@@ -153,7 +153,7 @@ export function SenderView() {
           cam.label.toLowerCase().includes('rear') ||
           cam.label.toLowerCase().includes('environment')
         );
-        const cameraId = backCamera?.id || cameras[0].id;
+        const cameraId = backCamera?.id || cameras[0]?.id || 'environment';
 
         // Start scanning
         await scanner.start(
@@ -347,7 +347,7 @@ export function SenderView() {
                   <div className="w-full max-w-sm mx-auto p-4 bg-red-500/10 border border-red-500/30 rounded-xl">
                     <p className="text-red-400 text-sm text-center mb-3">{cameraError}</p>
                     <Button
-                      variant="outline"
+                      variant="secondary"
                       size="sm"
                       className="w-full"
                       onClick={() => {
