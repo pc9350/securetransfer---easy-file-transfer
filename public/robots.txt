@@ -1,4 +1,4 @@
-# File Transfer PWA - Robots.txt
+# SecureTransfer.xyz - Robots.txt
 User-agent: *
 Allow: /
 
@@ -9,10 +9,8 @@ Allow: /help
 Allow: /privacy
 Allow: /security
 
-# Disallow API/internal paths (if any)
+# Disallow API/internal paths
 Disallow: /api/
 
-# Sitemap location (update with your actual domain)
-# For Vercel: https://your-app-name.vercel.app/sitemap.xml
-# For custom domain: https://yourdomain.com/sitemap.xml
-Sitemap: /sitemap.xml
+# Sitemap
+Sitemap: https://www.securetransfer.xyz/sitemap.xml
