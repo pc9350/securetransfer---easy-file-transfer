@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import Peer, { DataConnection } from 'peerjs';
 import { 
   ConnectionInfo, 
-  ConnectionState, 
   PeerMessage, 
   SECURITY_CONSTANTS 
 } from '../types';

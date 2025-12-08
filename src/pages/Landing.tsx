@@ -1,10 +1,9 @@
 import { Link } from 'react-router-dom';
-import { getRecommendedMode, getDeviceInfo, checkBrowserCompatibility } from '../utils/deviceDetection';
+import { getRecommendedMode, checkBrowserCompatibility } from '../utils/deviceDetection';
 import { SecurityBadge } from '../components/shared/SecurityBadge';
 import { Button } from '../components/shared/Button';
 
 export default function Landing() {
-  const deviceInfo = getDeviceInfo();
   const recommended = getRecommendedMode();
   const compatibility = checkBrowserCompatibility();
 

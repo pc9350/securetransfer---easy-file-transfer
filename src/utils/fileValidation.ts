@@ -55,7 +55,7 @@ export function isBlockedExtension(fileName: string): boolean {
  * Check if MIME type is allowed
  */
 export function isAllowedMimeType(mimeType: string): boolean {
-  const allAllowed = [
+  const allAllowed: string[] = [
     ...ALLOWED_FILE_TYPES.images,
     ...ALLOWED_FILE_TYPES.videos,
     ...ALLOWED_FILE_TYPES.documents,
@@ -88,10 +88,10 @@ export async function verifyFileSignature(file: File): Promise<boolean> {
  * Get file category
  */
 export function getFileCategory(mimeType: string): 'image' | 'video' | 'document' | 'audio' | 'unknown' {
-  if (ALLOWED_FILE_TYPES.images.includes(mimeType)) return 'image';
-  if (ALLOWED_FILE_TYPES.videos.includes(mimeType)) return 'video';
-  if (ALLOWED_FILE_TYPES.documents.includes(mimeType)) return 'document';
-  if (ALLOWED_FILE_TYPES.audio.includes(mimeType)) return 'audio';
+  if ((ALLOWED_FILE_TYPES.images as readonly string[]).includes(mimeType)) return 'image';
+  if ((ALLOWED_FILE_TYPES.videos as readonly string[]).includes(mimeType)) return 'video';
+  if ((ALLOWED_FILE_TYPES.documents as readonly string[]).includes(mimeType)) return 'document';
+  if ((ALLOWED_FILE_TYPES.audio as readonly string[]).includes(mimeType)) return 'audio';
   return 'unknown';
 }
 

@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { Html5QrcodeScanner, Html5QrcodeSupportedFormats } from 'html5-qrcode';
 import { useWebRTC } from '../../hooks/useWebRTC';
 import { useFileTransfer } from '../../hooks/useFileTransfer';
-import { FileWithPreview, PeerMessage } from '../../types';
+import { FileWithPreview } from '../../types';
 import { ConnectionStatus } from '../shared/ConnectionStatus';
 import { SecurityBadges } from '../shared/SecurityBadge';
 import { Button } from '../shared/Button';
@@ -75,7 +75,6 @@ export function SenderView() {
   // Initialize file transfer
   const {
     sendFiles,
-    handleMessage: handleTransferMessage,
     fileProgress,
     batchProgress,
     isSending,

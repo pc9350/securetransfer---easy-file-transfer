@@ -100,7 +100,6 @@ export function ReceiverView() {
     connectionInfo,
     connect,
     disconnect,
-    sendMessage,
     setPin,
     roomCode,
     isConnected,
