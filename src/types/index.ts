@@ -219,7 +219,7 @@ export interface DeviceInfo {
 
 export const FILE_CONSTANTS = {
   MAX_FILE_SIZE: 2 * 1024 * 1024 * 1024, // 2GB
-  MAX_SESSION_SIZE: 5 * 1024 * 1024 * 1024, // 5GB
+  MAX_SESSION_SIZE: 10 * 1024 * 1024 * 1024, // 10GB
   CHUNK_SIZE: 64 * 1024, // 64KB
   MAX_FILES_PER_BATCH: 500,
 } as const;

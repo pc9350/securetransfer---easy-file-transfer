@@ -231,7 +231,7 @@ export default function Landing() {
               </svg>
             </summary>
             <p className="mt-4 text-slate-400 text-sm">
-              Maximum 2GB per file, 5GB per session. Transfer up to 500 files at once. 
+              Maximum 2GB per file, 10GB per session. Transfer up to 500 files at once. 
               Perfect for photos, videos, and documents.
             </p>
           </details>

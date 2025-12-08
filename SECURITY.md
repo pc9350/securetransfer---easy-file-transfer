@@ -45,7 +45,7 @@ All file transfers use WebRTC's built-in DTLS-SRTP encryption:
 - MIME type verification
 - File signature (magic bytes) verification
 - File name sanitization (removes path traversal, XSS vectors)
-- Size limits (2GB per file, 5GB per session)
+- Size limits (2GB per file, 10GB per session)
 
 ### 5. Content Security Policy
 

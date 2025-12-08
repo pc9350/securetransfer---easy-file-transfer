@@ -129,7 +129,7 @@ netlify deploy --prod
 ## File Limits
 
 - Maximum file size: 2GB per file
-- Maximum session size: 5GB
+- Maximum session size: 10GB
 - Maximum files per batch: 500
 - Supported types: Images, Videos, Documents, Audio
 
