@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Html5QrcodeScanner, Html5QrcodeSupportedFormats } from 'html5-qrcode';
+import { Html5Qrcode } from 'html5-qrcode';
 import { useWebRTC } from '../../hooks/useWebRTC';
 import { useFileTransfer } from '../../hooks/useFileTransfer';
 import { FileWithPreview } from '../../types';
@@ -22,7 +22,9 @@ export function SenderView() {
   // Room code state
   const [roomCode, setRoomCode] = useState(searchParams.get('room') || '');
   const [showScanner, setShowScanner] = useState(!searchParams.get('room'));
-  const scannerRef = useRef<Html5QrcodeScanner | null>(null);
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [isStartingCamera, setIsStartingCamera] = useState(false);
+  const scannerRef = useRef<Html5Qrcode | null>(null);
   
   // PIN state
   const [showPinModal, setShowPinModal] = useState(false);
@@ -113,12 +115,12 @@ export function SenderView() {
   // Track if QR scanner has been initialized
   const scannerInitialized = useRef(false);
 
-  // Initialize QR scanner
+  // Initialize QR scanner with auto-start camera
   useEffect(() => {
     if (!showScanner || scannerInitialized.current) return;
     
     // Wait for DOM element to be available
-    const initScanner = () => {
+    const initScanner = async () => {
       const element = document.getElementById('qr-reader');
       if (!element) {
         // Element not ready, try again
@@ -129,53 +131,85 @@ export function SenderView() {
       if (scannerRef.current) return; // Already initialized
       
       scannerInitialized.current = true;
+      setIsStartingCamera(true);
+      setCameraError(null);
 
-      const scanner = new Html5QrcodeScanner(
-        'qr-reader',
-        {
-          fps: 10,
-          qrbox: { width: 250, height: 250 },
-          formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE],
-          rememberLastUsedCamera: true,
-        },
-        false
-      );
+      try {
+        const scanner = new Html5Qrcode('qr-reader');
+        scannerRef.current = scanner;
 
-      scanner.render(
-        (decodedText) => {
-          // Extract room code from URL or direct code
-          let code = decodedText;
-          try {
-            const url = new URL(decodedText);
-            code = url.searchParams.get('room') || decodedText;
-          } catch {
-            // Not a URL, use as-is
-          }
-
-          const normalized = normalizeRoomCode(code);
-          if (isValidRoomCodeFormat(normalized)) {
-            setRoomCode(formatRoomCode(normalized));
-            scanner.clear().catch(console.error);
-            scannerRef.current = null;
-            scannerInitialized.current = false;
-            // Use ref to avoid stale closure
-            handleConnectRef.current(normalized);
-          }
-        },
-        (error) => {
-          // Ignore scan errors
-          console.debug('QR scan error:', error);
+        // Get available cameras
+        const cameras = await Html5Qrcode.getCameras();
+        
+        if (cameras.length === 0) {
+          setCameraError('No camera found on this device');
+          setIsStartingCamera(false);
+          return;
         }
-      );
 
-      scannerRef.current = scanner;
+        // Prefer back camera on mobile
+        const backCamera = cameras.find(cam => 
+          cam.label.toLowerCase().includes('back') || 
+          cam.label.toLowerCase().includes('rear') ||
+          cam.label.toLowerCase().includes('environment')
+        );
+        const cameraId = backCamera?.id || cameras[0].id;
+
+        // Start scanning
+        await scanner.start(
+          cameraId,
+          {
+            fps: 10,
+            qrbox: { width: 250, height: 250 },
+          },
+          (decodedText) => {
+            // Extract room code from URL or direct code
+            let code = decodedText;
+            try {
+              const url = new URL(decodedText);
+              code = url.searchParams.get('room') || decodedText;
+            } catch {
+              // Not a URL, use as-is
+            }
+
+            const normalized = normalizeRoomCode(code);
+            if (isValidRoomCodeFormat(normalized)) {
+              setRoomCode(formatRoomCode(normalized));
+              // Stop scanner and connect
+              scanner.stop().catch(console.error);
+              scannerRef.current = null;
+              scannerInitialized.current = false;
+              setShowScanner(false);
+              // Use ref to avoid stale closure
+              handleConnectRef.current(normalized);
+            }
+          },
+          () => {
+            // Ignore scan errors (no QR code in frame)
+          }
+        );
+        
+        setIsStartingCamera(false);
+      } catch (error) {
+        console.error('Camera error:', error);
+        const message = error instanceof Error ? error.message : 'Failed to start camera';
+        
+        if (message.includes('Permission') || message.includes('NotAllowed')) {
+          setCameraError('Camera permission denied. Please allow camera access and try again.');
+        } else if (message.includes('NotFound') || message.includes('no camera')) {
+          setCameraError('No camera found on this device.');
+        } else {
+          setCameraError('Could not start camera. Try entering the code manually.');
+        }
+        setIsStartingCamera(false);
+      }
     };
 
     initScanner();
 
     return () => {
       if (scannerRef.current) {
-        scannerRef.current.clear().catch(console.error);
+        scannerRef.current.stop().catch(console.error);
         scannerRef.current = null;
       }
       scannerInitialized.current = false;
@@ -298,13 +332,50 @@ export function SenderView() {
             {/* QR Scanner */}
             {showScanner && (
               <div className="space-y-4">
-                <div 
-                  id="qr-reader" 
-                  className="w-full max-w-sm mx-auto rounded-xl overflow-hidden"
-                />
-                <p className="text-center text-sm text-slate-500">
-                  Point your camera at the QR code on your computer
-                </p>
+                {/* Camera Loading State */}
+                {isStartingCamera && (
+                  <div className="w-full max-w-sm mx-auto h-64 bg-slate-800 rounded-xl flex items-center justify-center">
+                    <div className="text-center">
+                      <div className="animate-spin w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full mx-auto mb-3"></div>
+                      <p className="text-slate-400 text-sm">Starting camera...</p>
+                    </div>
+                  </div>
+                )}
+                
+                {/* Camera Error */}
+                {cameraError && (
+                  <div className="w-full max-w-sm mx-auto p-4 bg-red-500/10 border border-red-500/30 rounded-xl">
+                    <p className="text-red-400 text-sm text-center mb-3">{cameraError}</p>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full"
+                      onClick={() => {
+                        setCameraError(null);
+                        scannerInitialized.current = false;
+                        setShowScanner(false);
+                        setTimeout(() => setShowScanner(true), 100);
+                      }}
+                    >
+                      Try Again
+                    </Button>
+                  </div>
+                )}
+                
+                {/* Camera View */}
+                {!cameraError && (
+                  <div 
+                    id="qr-reader" 
+                    className="w-full max-w-sm mx-auto rounded-xl overflow-hidden bg-slate-800"
+                    style={{ minHeight: isStartingCamera ? 0 : 280 }}
+                  />
+                )}
+                
+                {!isStartingCamera && !cameraError && (
+                  <p className="text-center text-sm text-slate-500">
+                    Point your camera at the QR code on your computer
+                  </p>
+                )}
               </div>
             )}
 
