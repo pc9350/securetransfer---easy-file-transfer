@@ -20,7 +20,8 @@ export default function Landing() {
         </h1>
         
         <p className="text-lg sm:text-xl text-slate-400 max-w-2xl mx-auto mb-8 animate-fade-in animate-delay-100">
-          Secure peer-to-peer file transfer between iPhone and Windows PC.
+          Secure peer-to-peer file transfer between any devices.
+          iPhone, Android, Windows, Mac, Linux — all supported.
           No installation, no account, no cloud storage.
         </p>
 
@@ -93,10 +94,10 @@ export default function Landing() {
               <span className="text-2xl font-bold text-white">1</span>
             </div>
             <h3 className="text-lg font-semibold text-slate-100 mb-2">
-              Open on PC
+              Open Receiver
             </h3>
             <p className="text-slate-400 text-sm">
-              Click "Receive Files" on your Windows PC to generate a QR code and room code
+              Click "Receive Files" on the device that should receive. A QR code and room code will appear.
             </p>
           </div>
 
@@ -106,10 +107,10 @@ export default function Landing() {
               <span className="text-2xl font-bold text-white">2</span>
             </div>
             <h3 className="text-lg font-semibold text-slate-100 mb-2">
-              Connect from iPhone
+              Connect Sender
             </h3>
             <p className="text-slate-400 text-sm">
-              Scan the QR code or enter the room code on your iPhone, then approve the connection
+              On the sending device, scan the QR code or enter the room code, then approve the connection
             </p>
           </div>
 
@@ -122,7 +123,7 @@ export default function Landing() {
               Send Files
             </h3>
             <p className="text-slate-400 text-sm">
-              Select photos, videos, or documents and tap send. Files download automatically on your PC
+              Select photos, videos, or documents and tap send. Files download automatically on the receiver
             </p>
           </div>
         </div>
@@ -244,8 +245,8 @@ export default function Landing() {
               </svg>
             </summary>
             <p className="mt-4 text-slate-400 text-sm">
-              Currently optimized for iPhone to Windows transfers, but it should work on any 
-              modern browser that supports WebRTC. Android and Mac support is available.
+              Yes! SecureTransfer works on any device with a modern browser: iPhone, Android, 
+              Windows, Mac, Linux, and even tablets. Just open the website on both devices.
             </p>
           </details>
         </div>

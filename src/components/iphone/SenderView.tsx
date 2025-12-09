@@ -10,6 +10,7 @@ import { Button } from '../shared/Button';
 import { FileList } from '../shared/FileItem';
 import { ProgressBar } from '../shared/ProgressBar';
 import { EnterPINModal } from '../security/EnterPINModal';
+import { FilePreviewModal } from '../shared/FilePreviewModal';
 import { useToast } from '../shared/Toast';
 import { formatFileSize, formatSpeed, formatTimeRemaining } from '../../utils/fileValidation';
 import { isValidRoomCodeFormat, normalizeRoomCode, formatRoomCode } from '../../utils/security';
@@ -34,7 +35,17 @@ export function SenderView() {
   // Files state
   const [selectedFiles, setSelectedFiles] = useState<FileWithPreview[]>([]);
   const [isLoadingFiles, setIsLoadingFiles] = useState(false);
+  const [loadingMessage, setLoadingMessage] = useState('');
+  const [filesBeingAdded, setFilesBeingAdded] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  
+  // Preview state
+  const [previewFile, setPreviewFile] = useState<{
+    name: string;
+    size: number;
+    type: string;
+    url?: string;
+  } | null>(null);
 
   // Handle PIN required
   const handlePinRequired = useCallback((): Promise<string | null> => {
@@ -235,60 +246,96 @@ export function SenderView() {
     };
   }, [showScanner]);
 
-  // Handle file selection - optimized for iOS speed
+  // Handle file selection - optimized for iOS speed with loading feedback
   const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const fileList = e.target.files;
-    if (!fileList || fileList.length === 0) return;
     
-    // Show loading immediately - iOS file picker can be slow
+    if (!fileList || fileList.length === 0) {
+      return;
+    }
+    
+    // Copy files array immediately - FileList can become stale
+    const files = Array.from(fileList);
+    const fileCount = files.length;
+    
+    // Show loading with count
     setIsLoadingFiles(true);
+    setFilesBeingAdded(fileCount);
+    setLoadingMessage(`Adding ${fileCount} ${fileCount === 1 ? 'file' : 'files'}...`);
     
-    // Use setTimeout to let the UI update before processing
-    setTimeout(() => {
-      const files = Array.from(fileList);
+    // Reset input FIRST
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+    
+    // Process files with slight delay to let UI update
+    requestAnimationFrame(() => {
       const processedFiles: FileWithPreview[] = [];
-      const skippedCount = { value: 0 };
+      let skippedCount = 0;
+      let processed = 0;
       
-      // Process files - minimal work, no object URLs yet
       for (const file of files) {
+        processed++;
+        
+        // Update loading message for large batches
+        if (fileCount > 10 && processed % 5 === 0) {
+          setLoadingMessage(`Processing ${processed}/${fileCount} files...`);
+        }
+        
         // Quick validation
         const ext = file.name.split('.').pop()?.toLowerCase() || '';
         const blocked = ['exe', 'bat', 'cmd', 'sh', 'ps1', 'msi', 'dll', 'scr', 'js', 'vbs'];
         
         if (file.size > 2 * 1024 * 1024 * 1024 || file.size === 0 || blocked.includes(ext)) {
-          skippedCount.value++;
+          skippedCount++;
           continue;
         }
         
-        // Create minimal file wrapper - NO preview URL here
-        // The preview will be created lazily in the FileList component
-        const fileWithPreview: FileWithPreview = Object.assign(file, {
+        // Extend the File object with additional properties
+        const fileWithPreview = Object.assign(file, {
           id: generateFileId(),
-          preview: undefined, // Lazy load later
+          preview: undefined,
           validationResult: { isValid: true, errors: [], warnings: [] },
-        });
+        }) as FileWithPreview;
         
         processedFiles.push(fileWithPreview);
       }
       
-      if (skippedCount.value > 0) {
-        toast.warning(`${skippedCount.value} file(s) skipped`, 'Some files were too large or invalid');
+      if (skippedCount > 0) {
+        toast.warning(`${skippedCount} file(s) skipped`, 'Some files were too large or invalid');
       }
       
+      // Update state with new files
       setSelectedFiles(prev => [...prev, ...processedFiles]);
       setIsLoadingFiles(false);
+      setFilesBeingAdded(0);
+      setLoadingMessage('');
       
-      // Reset input
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
+      // Show success message for large batches
+      if (processedFiles.length > 5) {
+        toast.success(`${processedFiles.length} files added`, 'Ready to send');
       }
-    }, 10); // Small delay to show loading state
+    });
   }, [toast]);
 
   // Handle file removal
   const handleRemoveFile = useCallback((id: string) => {
     setSelectedFiles(prev => prev.filter(f => f.id !== id));
   }, []);
+
+  // Handle file preview
+  const handlePreviewFile = useCallback((file: { id: string; name: string; size: number; type: string }) => {
+    // Find the actual file to create a URL
+    const selectedFile = selectedFiles.find(f => f.id === file.id);
+    if (selectedFile) {
+      setPreviewFile({
+        name: selectedFile.name,
+        size: selectedFile.size,
+        type: selectedFile.type,
+        url: URL.createObjectURL(selectedFile),
+      });
+    }
+  }, [selectedFiles]);
 
   // Handle send files
   const handleSendFiles = useCallback(async () => {
@@ -332,8 +379,8 @@ export function SenderView() {
         </h1>
         <p className="text-slate-400">
           {isConnected 
-            ? 'Select files to send to your computer'
-            : 'Scan the QR code or enter the room code from your computer'
+            ? 'Select files to send'
+            : 'Scan the QR code or enter the room code from the receiving device'
           }
         </p>
       </div>
@@ -431,7 +478,7 @@ export function SenderView() {
                 
                 {!isStartingCamera && !cameraError && (
                   <p className="text-center text-sm text-slate-500">
-                    Point your camera at the QR code on your computer
+                    Point your camera at the QR code on the receiving device
                   </p>
                 )}
               </div>
@@ -519,7 +566,7 @@ export function SenderView() {
               <label
                 htmlFor="file-input"
                 className={`flex flex-col items-center justify-center w-full h-40 border-2 border-dashed border-slate-700 rounded-xl transition-all ${
-                  isLoadingFiles 
+                  isLoadingFiles
                     ? 'cursor-wait bg-slate-800/50' 
                     : 'cursor-pointer hover:border-primary-500/50 hover:bg-slate-800/30'
                 }`}
@@ -528,7 +575,7 @@ export function SenderView() {
                   <>
                     <div className="w-10 h-10 border-2 border-primary-500 border-t-transparent rounded-full animate-spin mb-2" />
                     <span className="text-sm text-slate-400">Processing files...</span>
-                    <span className="text-xs text-slate-500 mt-1">This may take a moment on iOS</span>
+                    <span className="text-xs text-slate-500 mt-1">Almost done!</span>
                   </>
                 ) : (
                   <>
@@ -602,6 +649,7 @@ export function SenderView() {
                   }))}
                   progress={isSending ? fileProgress : undefined}
                   onRemove={!isSending ? handleRemoveFile : undefined}
+                  onPreview={handlePreviewFile}
                   showProgress={isSending}
                   className="max-h-60 overflow-y-auto"
                 />
@@ -633,6 +681,50 @@ export function SenderView() {
         onSubmit={handlePinSubmit}
         error={pinError}
       />
+
+      {/* File Preview Modal */}
+      <FilePreviewModal
+        isOpen={!!previewFile}
+        onClose={() => {
+          if (previewFile?.url) {
+            URL.revokeObjectURL(previewFile.url);
+          }
+          setPreviewFile(null);
+        }}
+        file={previewFile}
+      />
+
+      {/* Full-screen loading overlay for file processing */}
+      {isLoadingFiles && filesBeingAdded > 0 && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/95 backdrop-blur-sm">
+          <div className="text-center p-8">
+            {/* Animated loading spinner */}
+            <div className="relative w-20 h-20 mx-auto mb-6">
+              <div className="absolute inset-0 border-4 border-slate-700 rounded-full"></div>
+              <div className="absolute inset-0 border-4 border-primary-500 border-t-transparent rounded-full animate-spin"></div>
+              <div className="absolute inset-2 border-4 border-slate-700 rounded-full"></div>
+              <div className="absolute inset-2 border-4 border-cyan-500 border-b-transparent rounded-full animate-spin" style={{ animationDirection: 'reverse', animationDuration: '0.75s' }}></div>
+            </div>
+            
+            {/* File count */}
+            <div className="mb-4">
+              <span className="text-4xl font-bold text-white">{filesBeingAdded}</span>
+              <span className="text-lg text-slate-400 ml-2">{filesBeingAdded === 1 ? 'file' : 'files'}</span>
+            </div>
+            
+            {/* Loading message */}
+            <p className="text-slate-300 text-lg mb-2">{loadingMessage}</p>
+            <p className="text-slate-500 text-sm">Please wait while we prepare your files</p>
+            
+            {/* Progress dots */}
+            <div className="flex justify-center gap-1 mt-6">
+              <div className="w-2 h-2 rounded-full bg-primary-500 animate-bounce" style={{ animationDelay: '0ms' }}></div>
+              <div className="w-2 h-2 rounded-full bg-primary-500 animate-bounce" style={{ animationDelay: '150ms' }}></div>
+              <div className="w-2 h-2 rounded-full bg-primary-500 animate-bounce" style={{ animationDelay: '300ms' }}></div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

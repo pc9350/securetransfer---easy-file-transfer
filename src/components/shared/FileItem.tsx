@@ -10,9 +10,11 @@ interface FileItemProps {
     size: number;
     type: string;
     preview?: string;
+    blob?: Blob;
   };
   progress?: TransferProgress;
   onRemove?: () => void;
+  onPreview?: () => void;
   showProgress?: boolean;
   className?: string;
 }
@@ -20,7 +22,8 @@ interface FileItemProps {
 export function FileItem({ 
   file, 
   progress, 
-  onRemove, 
+  onRemove,
+  onPreview,
   showProgress = false,
   className = '' 
 }: FileItemProps) {
@@ -61,16 +64,34 @@ export function FileItem({
     ),
   };
 
+  const isPreviewable = file.type.startsWith('image/') || file.type.startsWith('video/') || file.type.startsWith('audio/');
+  
   return (
     <div className={`flex items-center gap-3 p-3 bg-slate-800/50 rounded-xl ${className}`}>
-      {/* Preview/Icon */}
-      <div className="flex-shrink-0 w-12 h-12 rounded-lg overflow-hidden bg-slate-700/50 flex items-center justify-center">
+      {/* Preview/Icon - clickable for preview */}
+      <button
+        onClick={onPreview}
+        disabled={!onPreview || !isPreviewable}
+        className={`flex-shrink-0 w-12 h-12 rounded-lg overflow-hidden bg-slate-700/50 flex items-center justify-center transition-all ${
+          onPreview && isPreviewable 
+            ? 'cursor-pointer hover:ring-2 hover:ring-primary-500/50 active:scale-95' 
+            : ''
+        }`}
+        title={onPreview && isPreviewable ? 'Click to preview' : undefined}
+      >
         {isImage && file.preview ? (
           <img src={file.preview} alt="" className="w-full h-full object-cover" />
+        ) : isImage || file.type.startsWith('video/') ? (
+          <div className="w-full h-full bg-gradient-to-br from-primary-500/20 to-cyan-500/20 flex items-center justify-center">
+            <svg className="w-6 h-6 text-primary-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          </div>
         ) : (
           <span className="text-2xl">{icon}</span>
         )}
-      </div>
+      </button>
 
       {/* File Info */}
       <div className="flex-1 min-w-0">
@@ -129,9 +150,11 @@ interface FileListProps {
     size: number;
     type: string;
     preview?: string;
+    blob?: Blob;
   }>;
   progress?: Map<string, TransferProgress>;
   onRemove?: (id: string) => void;
+  onPreview?: (file: { id: string; name: string; size: number; type: string; preview?: string; blob?: Blob }) => void;
   showProgress?: boolean;
   className?: string;
   emptyMessage?: string;
@@ -140,7 +163,8 @@ interface FileListProps {
 export function FileList({ 
   files, 
   progress, 
-  onRemove, 
+  onRemove,
+  onPreview,
   showProgress = false,
   className = '',
   emptyMessage = 'No files selected'
@@ -161,6 +185,7 @@ export function FileList({
           file={file}
           progress={progress?.get(file.id)}
           onRemove={onRemove ? () => onRemove(file.id) : undefined}
+          onPreview={onPreview ? () => onPreview(file) : undefined}
           showProgress={showProgress}
         />
       ))}

@@ -10,6 +10,7 @@ import { FileList } from '../shared/FileItem';
 import { ProgressBar } from '../shared/ProgressBar';
 import { ConnectionApprovalModal } from '../security/ConnectionApprovalModal';
 import { SetPINModal } from '../security/SetPINModal';
+import { FilePreviewModal } from '../shared/FilePreviewModal';
 import { useToast } from '../shared/Toast';
 import { formatFileSize, formatSpeed, formatTimeRemaining } from '../../utils/fileValidation';
 import { sanitizeFileName } from '../../utils/security';
@@ -36,6 +37,14 @@ export function ReceiverView() {
     type: string;
     blob: Blob;
   }>>([]);
+  
+  // Preview state
+  const [previewFile, setPreviewFile] = useState<{
+    name: string;
+    size: number;
+    type: string;
+    blob: Blob;
+  } | null>(null);
 
   // Handle connection approval request
   const handleConnectionRequest = useCallback((peerId: string): Promise<boolean> => {
@@ -186,7 +195,7 @@ export function ReceiverView() {
         <p className="text-slate-400">
           {isConnected 
             ? 'Connected and ready to receive files'
-            : 'Scan the QR code or enter the room code on your iPhone'
+            : 'Scan the QR code or enter the room code on the sending device'
           }
         </p>
       </div>
@@ -288,7 +297,7 @@ export function ReceiverView() {
               <ol className="space-y-2 text-sm text-slate-400">
                 <li className="flex gap-2">
                   <span className="text-primary-400 font-semibold">1.</span>
-                  Open this website on your iPhone
+                  Open this website on the sending device
                 </li>
                 <li className="flex gap-2">
                   <span className="text-primary-400 font-semibold">2.</span>
@@ -379,6 +388,17 @@ export function ReceiverView() {
                     estimatedTimeRemaining: 0,
                     status: 'completed' as const,
                   }]))}
+                  onPreview={(file) => {
+                    const received = receivedFiles.find(f => f.id === file.id);
+                    if (received) {
+                      setPreviewFile({
+                        name: received.name,
+                        size: received.size,
+                        type: received.type,
+                        blob: received.blob,
+                      });
+                    }
+                  }}
                 />
               ) : (
                 <div className="text-center py-8 text-slate-500">
@@ -406,6 +426,13 @@ export function ReceiverView() {
         isOpen={showPinModal}
         onClose={() => setShowPinModal(false)}
         onSetPIN={handleSetPin}
+      />
+
+      {/* File Preview Modal */}
+      <FilePreviewModal
+        isOpen={!!previewFile}
+        onClose={() => setPreviewFile(null)}
+        file={previewFile}
       />
     </div>
   );
