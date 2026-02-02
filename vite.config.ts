@@ -66,7 +66,7 @@ export default defineConfig({
         manualChunks: {
           vendor: ['react', 'react-dom', 'react-router-dom'],
           peerjs: ['peerjs'],
-          qrcode: ['qrcode', 'html5-qrcode']
+          qrcode: ['qrcode']
         }
       }
     }
