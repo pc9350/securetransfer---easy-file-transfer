@@ -371,9 +371,12 @@ export function ReceiverView() {
 
             {/* File List */}
             <div>
-              <h3 className="text-sm font-medium text-slate-300 mb-3">
-                {hasActiveTransfer ? 'Incoming Files' : receivedFiles.length > 0 ? 'Received Files' : 'Waiting for files...'}
-              </h3>
+              {/* Only show heading when transferring or waiting - FileGallery has its own header */}
+              {(hasActiveTransfer || receivedFiles.length === 0) && (
+                <h3 className="text-sm font-medium text-slate-300 mb-3">
+                  {hasActiveTransfer ? 'Incoming Files' : 'Waiting for files...'}
+                </h3>
+              )}
               
               {/* Show progress during active transfer */}
               {hasActiveTransfer && progressArray.length > 0 && (
