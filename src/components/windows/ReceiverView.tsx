@@ -7,7 +7,6 @@ import { QRCodeDisplay } from '../shared/QRCodeDisplay';
 import { ConnectionStatus } from '../shared/ConnectionStatus';
 import { SecurityBadges } from '../shared/SecurityBadge';
 import { Button } from '../shared/Button';
-import { FileList } from '../shared/FileItem';
 import { FileGallery } from '../shared/FileGallery';
 import { ProgressBar } from '../shared/ProgressBar';
 import { ConnectionApprovalModal } from '../security/ConnectionApprovalModal';
@@ -376,20 +375,25 @@ export function ReceiverView() {
                 {hasActiveTransfer ? 'Incoming Files' : receivedFiles.length > 0 ? 'Received Files' : 'Waiting for files...'}
               </h3>
               
-              {/* Show FileList with progress during active transfer */}
-              {hasActiveTransfer && progressArray.length > 0 ? (
-                <FileList
-                  files={progressArray.map(p => ({
-                    id: p.fileId,
-                    name: p.fileName,
-                    size: p.fileSize,
-                    type: '',
-                  }))}
-                  progress={fileProgress}
-                  showProgress
-                />
-              ) : receivedFiles.length > 0 ? (
-                // Show FileGallery for all devices - users can save individually or as ZIP
+              {/* Show progress during active transfer */}
+              {hasActiveTransfer && progressArray.length > 0 && (
+                <div className="space-y-2 mb-4">
+                  {progressArray.map(p => (
+                    <div key={p.fileId} className="flex items-center gap-3 p-3 bg-slate-800/50 rounded-xl">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm text-slate-200 truncate">{p.fileName}</p>
+                        <p className="text-xs text-slate-500">{Math.round(p.percentage)}%</p>
+                      </div>
+                      {p.status === 'transferring' && (
+                        <div className="w-4 h-4 border-2 border-primary-500/30 border-t-primary-500 rounded-full animate-spin" />
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+              
+              {/* Always show FileGallery when we have received files */}
+              {receivedFiles.length > 0 ? (
                 <FileGallery
                   files={receivedFiles}
                   onPreview={(file) => {
@@ -401,7 +405,7 @@ export function ReceiverView() {
                     });
                   }}
                 />
-              ) : (
+              ) : !hasActiveTransfer && (
                 <div className="text-center py-8 text-slate-500">
                   <svg className="w-12 h-12 mx-auto mb-3 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10" />
