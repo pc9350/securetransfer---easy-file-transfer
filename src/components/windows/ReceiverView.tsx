@@ -373,7 +373,8 @@ export function ReceiverView() {
                 {isReceiving ? 'Incoming Files' : receivedFiles.length > 0 ? 'Received Files' : 'Waiting for files...'}
               </h3>
               
-              {progressArray.length > 0 ? (
+              {/* Show FileList with progress during active transfer */}
+              {isReceiving && progressArray.length > 0 ? (
                 <FileList
                   files={progressArray.map(p => ({
                     id: p.fileId,
