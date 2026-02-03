@@ -24,6 +24,7 @@ import {
   logPinFailed,
   logError,
 } from '../utils/auditLog';
+import { logger } from '../utils/logger';
 
 interface UseWebRTCOptions {
   mode: 'host' | 'client';
@@ -168,7 +169,7 @@ export function useWebRTC(options: UseWebRTCOptions): UseWebRTCReturn {
 
   // Handle incoming messages
   const handleMessage = useCallback(async (message: PeerMessage) => {
-    console.log('[WebRTC] Received message:', message.type);
+    logger.log('[WebRTC] Received message:', message.type);
     
     switch (message.type) {
       case 'connection_request':
@@ -388,7 +389,7 @@ export function useWebRTC(options: UseWebRTCOptions): UseWebRTCReturn {
 
       default:
         // Forward other messages to handler
-        console.log('[WebRTC] Forwarding message to handler:', message.type);
+        logger.log('[WebRTC] Forwarding message to handler:', message.type);
         onMessageRef.current?.(message);
     }
   }, [mode, sendMessage, startHeartbeat, cleanup, updateState, connectionInfo.peerId]); // No callback deps - using refs
@@ -399,7 +400,7 @@ export function useWebRTC(options: UseWebRTCOptions): UseWebRTCReturn {
       // Add prefix to make IDs more unique and avoid collisions
       const fullPeerId = `st-${peerId.toLowerCase()}`;
       
-      console.log('[PeerJS] Attempting to connect with ID:', fullPeerId);
+      logger.log('[PeerJS] Attempting to connect with ID:', fullPeerId);
       
       const peer = new Peer(fullPeerId, {
         debug: import.meta.env.DEV ? 2 : 0,
@@ -412,7 +413,7 @@ export function useWebRTC(options: UseWebRTCOptions): UseWebRTCReturn {
       });
 
       const timeout = setTimeout(() => {
-        console.log('[PeerJS] Connection timeout, destroying peer');
+        logger.log('[PeerJS] Connection timeout, destroying peer');
         peer.destroy();
         reject(new Error('Connection timeout - server may be busy'));
       }, SECURITY_CONSTANTS.CONNECTION_TIMEOUT_MS);
@@ -427,7 +428,7 @@ export function useWebRTC(options: UseWebRTCOptions): UseWebRTCReturn {
         clearTimeout(timeout);
         reconnectAttempts = 0;
         updateState({ peerId: id });
-        console.log('[PeerJS] Successfully connected with ID:', id);
+        logger.log('[PeerJS] Successfully connected with ID:', id);
         resolve(peer);
       });
 
@@ -446,17 +447,17 @@ export function useWebRTC(options: UseWebRTCOptions): UseWebRTCReturn {
       });
 
       peer.on('disconnected', () => {
-        console.log('[PeerJS] Disconnected from signaling server, attempt:', reconnectAttempts + 1);
+        logger.log('[PeerJS] Disconnected from signaling server, attempt:', reconnectAttempts + 1);
         
         if (peer && !peer.destroyed && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
           reconnectAttempts++;
           // Exponential backoff for reconnection
           const delay = Math.min(1000 * Math.pow(2, reconnectAttempts - 1), 10000);
-          console.log(`[PeerJS] Will attempt reconnect in ${delay}ms...`);
+          logger.log(`[PeerJS] Will attempt reconnect in ${delay}ms...`);
           
           setTimeout(() => {
             if (peer && !peer.destroyed && peer.disconnected) {
-              console.log('[PeerJS] Attempting reconnect...');
+              logger.log('[PeerJS] Attempting reconnect...');
               peer.reconnect();
             }
           }, delay);
@@ -467,7 +468,7 @@ export function useWebRTC(options: UseWebRTCOptions): UseWebRTCReturn {
       });
 
       peer.on('close', () => {
-        console.log('[PeerJS] Peer destroyed/closed');
+        logger.log('[PeerJS] Peer destroyed/closed');
       });
     });
   }, [updateState]);
@@ -497,7 +498,7 @@ export function useWebRTC(options: UseWebRTCOptions): UseWebRTCReturn {
         throw new Error('Connection not stable');
       }
 
-      console.log('[WebRTC] Connection stable, showing room code');
+      logger.log('[WebRTC] Connection stable, showing room code');
       
       updateState({ 
         state: 'idle',
@@ -536,7 +537,7 @@ export function useWebRTC(options: UseWebRTCOptions): UseWebRTCReturn {
       
       // Retry if we haven't exceeded max retries
       if (retryCount < MAX_RETRIES) {
-        console.log(`[WebRTC] Connection failed, retrying (${retryCount + 1}/${MAX_RETRIES})...`);
+        logger.log(`[WebRTC] Connection failed, retrying (${retryCount + 1}/${MAX_RETRIES})...`);
         await new Promise(resolve => setTimeout(resolve, RETRY_DELAY * (retryCount + 1)));
         return connectAsHost(retryCount + 1);
       }
@@ -561,7 +562,7 @@ export function useWebRTC(options: UseWebRTCOptions): UseWebRTCReturn {
       // Generate unique client ID
       const clientId = `client-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       
-      console.log('[WebRTC] Connecting to host:', hostPeerId);
+      logger.log('[WebRTC] Connecting to host:', hostPeerId);
       
       const peer = await initializePeer(clientId);
       peerRef.current = peer;
@@ -615,7 +616,7 @@ export function useWebRTC(options: UseWebRTCOptions): UseWebRTCReturn {
       
       // Retry if we haven't exceeded max retries
       if (retryCount < MAX_RETRIES) {
-        console.log(`[WebRTC] Client connection failed, retrying (${retryCount + 1}/${MAX_RETRIES})...`);
+        logger.log(`[WebRTC] Client connection failed, retrying (${retryCount + 1}/${MAX_RETRIES})...`);
         await new Promise(resolve => setTimeout(resolve, RETRY_DELAY * (retryCount + 1)));
         return connectAsClient(targetRoomCode, retryCount + 1);
       }
@@ -629,13 +630,13 @@ export function useWebRTC(options: UseWebRTCOptions): UseWebRTCReturn {
   const connect = useCallback(async (roomCode?: string) => {
     // Prevent multiple simultaneous connection attempts
     if (isConnectingRef.current) {
-      console.log('[WebRTC] Already connecting, skipping...');
+      logger.log('[WebRTC] Already connecting, skipping...');
       return;
     }
     
     // Prevent connecting if already connected
     if (peerRef.current && !peerRef.current.destroyed) {
-      console.log('[WebRTC] Already connected, skipping...');
+      logger.log('[WebRTC] Already connected, skipping...');
       return;
     }
 

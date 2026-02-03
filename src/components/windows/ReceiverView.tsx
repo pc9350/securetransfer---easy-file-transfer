@@ -1,23 +1,29 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useWebRTC } from '../../hooks/useWebRTC';
 import { useFileTransfer } from '../../hooks/useFileTransfer';
-import { FileMetadata, PeerMessage } from '../../types';
+import { useBeforeUnload } from '../../hooks/useBeforeUnload';
+import { FileMetadata, PeerMessage, SECURITY_CONSTANTS } from '../../types';
 import { QRCodeDisplay } from '../shared/QRCodeDisplay';
 import { ConnectionStatus } from '../shared/ConnectionStatus';
 import { SecurityBadges } from '../shared/SecurityBadge';
 import { Button } from '../shared/Button';
-import { FileList } from '../shared/FileItem';
+import { FileGallery } from '../shared/FileGallery';
 import { ProgressBar } from '../shared/ProgressBar';
 import { ConnectionApprovalModal } from '../security/ConnectionApprovalModal';
 import { SetPINModal } from '../security/SetPINModal';
 import { FilePreviewModal } from '../shared/FilePreviewModal';
+import { NetworkWarning } from '../shared/NetworkWarning';
 import { useToast } from '../shared/Toast';
 import { formatFileSize, formatSpeed, formatTimeRemaining } from '../../utils/fileValidation';
 import { sanitizeFileName } from '../../utils/security';
 import { logPinSet } from '../../utils/auditLog';
+import { logger } from '../../utils/logger';
 
 export function ReceiverView() {
   const toast = useToast();
+  
+  // Track when room was created for countdown timer
+  const [roomCreatedAt, setRoomCreatedAt] = useState<number | null>(null);
   
   // Connection approval state
   const [pendingApproval, setPendingApproval] = useState<{
@@ -55,7 +61,7 @@ export function ReceiverView() {
 
   // Handle file received - defined first so it can be used by useFileTransfer
   const handleFileReceived = useCallback((blob: Blob, metadata: FileMetadata) => {
-    console.log('[Receiver] File received:', metadata.name, metadata.size);
+    logger.log('[Receiver] File received:', metadata.name, metadata.size);
     const sanitizedName = sanitizeFileName(metadata.name);
     
     setReceivedFiles(prev => [...prev, {
@@ -66,16 +72,7 @@ export function ReceiverView() {
       blob,
     }]);
 
-    // Auto-download
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = sanitizedName;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    
+    // No auto-download - let user choose what to save via FileGallery
     toast.success('File received', sanitizedName);
   }, [toast]);
 
@@ -98,7 +95,7 @@ export function ReceiverView() {
 
   // Forward messages to file transfer handler
   const handleIncomingMessage = useCallback((message: PeerMessage) => {
-    console.log('[Receiver] Incoming message:', message.type);
+    logger.log('[Receiver] Incoming message:', message.type);
     if (['batch_start', 'file_metadata', 'file_chunk', 'file_complete', 'batch_complete', 'file_error'].includes(message.type)) {
       handleTransferMessage(message);
     }
@@ -144,6 +141,8 @@ export function ReceiverView() {
     if (hasInitialized.current) return;
     hasInitialized.current = true;
     
+    // Track when room was created for countdown
+    setRoomCreatedAt(Date.now());
     connect();
     
     // Cleanup function
@@ -151,6 +150,12 @@ export function ReceiverView() {
       // Don't reset hasInitialized on cleanup to prevent re-init on HMR
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Warn user before leaving during active session
+  useBeforeUnload(
+    isConnected || isReceiving || receivedFiles.length > 0,
+    'You have an active file transfer session. Are you sure you want to leave?'
+  );
 
   // Handle approval
   const handleApprove = useCallback(() => {
@@ -184,9 +189,15 @@ export function ReceiverView() {
 
   // Convert progress map to array for FileList
   const progressArray = Array.from(fileProgress.values());
+  
+  // Check if any files are still actively transferring (not completed)
+  const hasActiveTransfer = progressArray.some(p => p.status === 'transferring' || p.status === 'pending');
 
   return (
     <div className="container mx-auto px-4 py-8 max-w-2xl">
+      {/* Network Warning */}
+      <NetworkWarning className="mb-4" />
+
       {/* Header */}
       <div className="text-center mb-8">
         <h1 className="text-3xl font-bold text-slate-100 mb-2">
@@ -224,6 +235,7 @@ export function ReceiverView() {
                 value={getConnectionUrl()}
                 size={200}
                 roomCode={roomCode}
+                expiresAt={roomCreatedAt ? roomCreatedAt + SECURITY_CONSTANTS.ROOM_CODE_EXPIRY_MS : undefined}
                 className="py-4"
               />
             )}
@@ -360,47 +372,44 @@ export function ReceiverView() {
 
             {/* File List */}
             <div>
-              <h3 className="text-sm font-medium text-slate-300 mb-3">
-                {isReceiving ? 'Incoming Files' : receivedFiles.length > 0 ? 'Received Files' : 'Waiting for files...'}
-              </h3>
+              {/* Only show heading when transferring or waiting - FileGallery has its own header */}
+              {(hasActiveTransfer || receivedFiles.length === 0) && (
+                <h3 className="text-sm font-medium text-slate-300 mb-3">
+                  {hasActiveTransfer ? 'Incoming Files' : 'Waiting for files...'}
+                </h3>
+              )}
               
-              {progressArray.length > 0 ? (
-                <FileList
-                  files={progressArray.map(p => ({
-                    id: p.fileId,
-                    name: p.fileName,
-                    size: p.fileSize,
-                    type: '',
-                  }))}
-                  progress={fileProgress}
-                  showProgress
-                />
-              ) : receivedFiles.length > 0 ? (
-                <FileList
+              {/* Show progress during active transfer */}
+              {hasActiveTransfer && progressArray.length > 0 && (
+                <div className="space-y-2 mb-4">
+                  {progressArray.map(p => (
+                    <div key={p.fileId} className="flex items-center gap-3 p-3 bg-slate-800/50 rounded-xl">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm text-slate-200 truncate">{p.fileName}</p>
+                        <p className="text-xs text-slate-500">{Math.round(p.percentage)}%</p>
+                      </div>
+                      {p.status === 'transferring' && (
+                        <div className="w-4 h-4 border-2 border-primary-500/30 border-t-primary-500 rounded-full animate-spin" />
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+              
+              {/* Always show FileGallery when we have received files */}
+              {receivedFiles.length > 0 ? (
+                <FileGallery
                   files={receivedFiles}
-                  progress={new Map(receivedFiles.map(f => [f.id, {
-                    fileId: f.id,
-                    fileName: f.name,
-                    fileSize: f.size,
-                    bytesTransferred: f.size,
-                    percentage: 100,
-                    speed: 0,
-                    estimatedTimeRemaining: 0,
-                    status: 'completed' as const,
-                  }]))}
                   onPreview={(file) => {
-                    const received = receivedFiles.find(f => f.id === file.id);
-                    if (received) {
-                      setPreviewFile({
-                        name: received.name,
-                        size: received.size,
-                        type: received.type,
-                        blob: received.blob,
-                      });
-                    }
+                    setPreviewFile({
+                      name: file.name,
+                      size: file.size,
+                      type: file.type,
+                      blob: file.blob,
+                    });
                   }}
                 />
-              ) : (
+              ) : !hasActiveTransfer && (
                 <div className="text-center py-8 text-slate-500">
                   <svg className="w-12 h-12 mx-auto mb-3 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10" />

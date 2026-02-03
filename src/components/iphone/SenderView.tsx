@@ -2,6 +2,7 @@ import { useState, useCallback, useRef, useEffect } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useWebRTC } from "../../hooks/useWebRTC";
 import { useFileTransfer } from "../../hooks/useFileTransfer";
+import { useBeforeUnload } from "../../hooks/useBeforeUnload";
 import { FileWithPreview } from "../../types";
 import { ConnectionStatus } from "../shared/ConnectionStatus";
 import { SecurityBadges } from "../shared/SecurityBadge";
@@ -10,6 +11,7 @@ import { FileList } from "../shared/FileItem";
 import { ProgressBar } from "../shared/ProgressBar";
 import { EnterPINModal } from "../security/EnterPINModal";
 import { FilePreviewModal } from "../shared/FilePreviewModal";
+import { NetworkWarning } from "../shared/NetworkWarning";
 import { useToast } from "../shared/Toast";
 import {
   formatFileSize,
@@ -100,6 +102,12 @@ export function SenderView() {
         toast.error("Transfer error", error);
       },
     });
+
+  // Warn user before leaving during active session
+  useBeforeUnload(
+    selectedFiles.length > 0 || isSending,
+    'You have files selected or a transfer in progress. Are you sure you want to leave?'
+  );
 
   // Handle connect - defined early so it can be used by QR scanner
   const handleConnect = useCallback(
@@ -344,6 +352,9 @@ export function SenderView() {
 
   return (
     <div className="container mx-auto px-4 py-8 max-w-2xl">
+      {/* Network Warning */}
+      <NetworkWarning className="mb-4" />
+
       {/* Header */}
       <div className="text-center mb-8">
         <h1 className="text-3xl font-bold text-slate-100 mb-2">Send Files</h1>
