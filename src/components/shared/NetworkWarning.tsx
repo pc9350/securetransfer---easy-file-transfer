@@ -26,19 +26,18 @@ function getNetworkInfo(): NetworkInfo {
 
   let type: NetworkInfo['type'] = 'unknown';
   
+  // Only use connection.type for detection - it's the only reliable indicator
+  // Note: effectiveType ('4g', '3g', etc.) refers to SPEED, not connection type!
+  // An ethernet connection can report '4g' effectiveType, so don't use it.
   if (connection.type === 'wifi') {
     type = 'wifi';
   } else if (connection.type === 'cellular') {
     type = 'cellular';
   } else if (connection.type === 'ethernet') {
     type = 'ethernet';
-  } else if (connection.effectiveType) {
-    // effectiveType is like '4g', '3g', '2g', 'slow-2g'
-    // These are typically cellular connections
-    if (['4g', '3g', '2g', 'slow-2g'].includes(connection.effectiveType)) {
-      type = 'cellular';
-    }
   }
+  // If connection.type is undefined or other values, leave as 'unknown'
+  // This is safer than showing false warnings
 
   return {
     type,
