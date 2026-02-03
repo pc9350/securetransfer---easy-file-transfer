@@ -18,11 +18,9 @@ import { useToast } from '../shared/Toast';
 import { formatFileSize, formatSpeed, formatTimeRemaining } from '../../utils/fileValidation';
 import { sanitizeFileName } from '../../utils/security';
 import { logPinSet } from '../../utils/auditLog';
-import { getDeviceInfo } from '../../utils/deviceDetection';
 
 export function ReceiverView() {
   const toast = useToast();
-  const deviceInfo = getDeviceInfo();
   
   // Track when room was created for countdown timer
   const [roomCreatedAt, setRoomCreatedAt] = useState<number | null>(null);
@@ -74,22 +72,9 @@ export function ReceiverView() {
       blob,
     }]);
 
-    // Only auto-download on desktop - mobile users use the gallery
-    if (!deviceInfo.isMobile) {
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = sanitizedName;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      
-      toast.success('File received', sanitizedName);
-    } else {
-      toast.success('File received', `${sanitizedName} - tap to save`);
-    }
-  }, [toast, deviceInfo.isMobile]);
+    // No auto-download - let user choose what to save via FileGallery
+    toast.success('File received', sanitizedName);
+  }, [toast]);
 
   // Initialize file transfer hook first
   const {
@@ -400,45 +385,18 @@ export function ReceiverView() {
                   showProgress
                 />
               ) : receivedFiles.length > 0 ? (
-                // Use FileGallery on mobile for better download experience
-                deviceInfo.isMobile ? (
-                  <FileGallery
-                    files={receivedFiles}
-                    onPreview={(file) => {
-                      setPreviewFile({
-                        name: file.name,
-                        size: file.size,
-                        type: file.type,
-                        blob: file.blob,
-                      });
-                    }}
-                  />
-                ) : (
-                  <FileList
-                    files={receivedFiles}
-                    progress={new Map(receivedFiles.map(f => [f.id, {
-                      fileId: f.id,
-                      fileName: f.name,
-                      fileSize: f.size,
-                      bytesTransferred: f.size,
-                      percentage: 100,
-                      speed: 0,
-                      estimatedTimeRemaining: 0,
-                      status: 'completed' as const,
-                    }]))}
-                    onPreview={(file) => {
-                      const received = receivedFiles.find(f => f.id === file.id);
-                      if (received) {
-                        setPreviewFile({
-                          name: received.name,
-                          size: received.size,
-                          type: received.type,
-                          blob: received.blob,
-                        });
-                      }
-                    }}
-                  />
-                )
+                // Show FileGallery for all devices - users can save individually or as ZIP
+                <FileGallery
+                  files={receivedFiles}
+                  onPreview={(file) => {
+                    setPreviewFile({
+                      name: file.name,
+                      size: file.size,
+                      type: file.type,
+                      blob: file.blob,
+                    });
+                  }}
+                />
               ) : (
                 <div className="text-center py-8 text-slate-500">
                   <svg className="w-12 h-12 mx-auto mb-3 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
