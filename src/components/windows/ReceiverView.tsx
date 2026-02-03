@@ -189,6 +189,9 @@ export function ReceiverView() {
 
   // Convert progress map to array for FileList
   const progressArray = Array.from(fileProgress.values());
+  
+  // Check if any files are still actively transferring (not completed)
+  const hasActiveTransfer = progressArray.some(p => p.status === 'transferring' || p.status === 'pending');
 
   return (
     <div className="container mx-auto px-4 py-8 max-w-2xl">
@@ -370,11 +373,11 @@ export function ReceiverView() {
             {/* File List */}
             <div>
               <h3 className="text-sm font-medium text-slate-300 mb-3">
-                {isReceiving ? 'Incoming Files' : receivedFiles.length > 0 ? 'Received Files' : 'Waiting for files...'}
+                {hasActiveTransfer ? 'Incoming Files' : receivedFiles.length > 0 ? 'Received Files' : 'Waiting for files...'}
               </h3>
               
               {/* Show FileList with progress during active transfer */}
-              {isReceiving && progressArray.length > 0 ? (
+              {hasActiveTransfer && progressArray.length > 0 ? (
                 <FileList
                   files={progressArray.map(p => ({
                     id: p.fileId,
