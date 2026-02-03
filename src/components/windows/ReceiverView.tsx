@@ -17,6 +17,7 @@ import { useToast } from '../shared/Toast';
 import { formatFileSize, formatSpeed, formatTimeRemaining } from '../../utils/fileValidation';
 import { sanitizeFileName } from '../../utils/security';
 import { logPinSet } from '../../utils/auditLog';
+import { logger } from '../../utils/logger';
 
 export function ReceiverView() {
   const toast = useToast();
@@ -60,7 +61,7 @@ export function ReceiverView() {
 
   // Handle file received - defined first so it can be used by useFileTransfer
   const handleFileReceived = useCallback((blob: Blob, metadata: FileMetadata) => {
-    console.log('[Receiver] File received:', metadata.name, metadata.size);
+    logger.log('[Receiver] File received:', metadata.name, metadata.size);
     const sanitizedName = sanitizeFileName(metadata.name);
     
     setReceivedFiles(prev => [...prev, {
@@ -94,7 +95,7 @@ export function ReceiverView() {
 
   // Forward messages to file transfer handler
   const handleIncomingMessage = useCallback((message: PeerMessage) => {
-    console.log('[Receiver] Incoming message:', message.type);
+    logger.log('[Receiver] Incoming message:', message.type);
     if (['batch_start', 'file_metadata', 'file_chunk', 'file_complete', 'batch_complete', 'file_error'].includes(message.type)) {
       handleTransferMessage(message);
     }
