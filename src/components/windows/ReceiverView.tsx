@@ -1,23 +1,31 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useWebRTC } from '../../hooks/useWebRTC';
 import { useFileTransfer } from '../../hooks/useFileTransfer';
-import { FileMetadata, PeerMessage } from '../../types';
+import { useBeforeUnload } from '../../hooks/useBeforeUnload';
+import { FileMetadata, PeerMessage, SECURITY_CONSTANTS } from '../../types';
 import { QRCodeDisplay } from '../shared/QRCodeDisplay';
 import { ConnectionStatus } from '../shared/ConnectionStatus';
 import { SecurityBadges } from '../shared/SecurityBadge';
 import { Button } from '../shared/Button';
 import { FileList } from '../shared/FileItem';
+import { FileGallery } from '../shared/FileGallery';
 import { ProgressBar } from '../shared/ProgressBar';
 import { ConnectionApprovalModal } from '../security/ConnectionApprovalModal';
 import { SetPINModal } from '../security/SetPINModal';
 import { FilePreviewModal } from '../shared/FilePreviewModal';
+import { NetworkWarning } from '../shared/NetworkWarning';
 import { useToast } from '../shared/Toast';
 import { formatFileSize, formatSpeed, formatTimeRemaining } from '../../utils/fileValidation';
 import { sanitizeFileName } from '../../utils/security';
 import { logPinSet } from '../../utils/auditLog';
+import { getDeviceInfo } from '../../utils/deviceDetection';
 
 export function ReceiverView() {
   const toast = useToast();
+  const deviceInfo = getDeviceInfo();
+  
+  // Track when room was created for countdown timer
+  const [roomCreatedAt, setRoomCreatedAt] = useState<number | null>(null);
   
   // Connection approval state
   const [pendingApproval, setPendingApproval] = useState<{
@@ -66,18 +74,22 @@ export function ReceiverView() {
       blob,
     }]);
 
-    // Auto-download
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = sanitizedName;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    
-    toast.success('File received', sanitizedName);
-  }, [toast]);
+    // Only auto-download on desktop - mobile users use the gallery
+    if (!deviceInfo.isMobile) {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = sanitizedName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      
+      toast.success('File received', sanitizedName);
+    } else {
+      toast.success('File received', `${sanitizedName} - tap to save`);
+    }
+  }, [toast, deviceInfo.isMobile]);
 
   // Initialize file transfer hook first
   const {
@@ -144,6 +156,8 @@ export function ReceiverView() {
     if (hasInitialized.current) return;
     hasInitialized.current = true;
     
+    // Track when room was created for countdown
+    setRoomCreatedAt(Date.now());
     connect();
     
     // Cleanup function
@@ -151,6 +165,12 @@ export function ReceiverView() {
       // Don't reset hasInitialized on cleanup to prevent re-init on HMR
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Warn user before leaving during active session
+  useBeforeUnload(
+    isConnected || isReceiving || receivedFiles.length > 0,
+    'You have an active file transfer session. Are you sure you want to leave?'
+  );
 
   // Handle approval
   const handleApprove = useCallback(() => {
@@ -187,6 +207,9 @@ export function ReceiverView() {
 
   return (
     <div className="container mx-auto px-4 py-8 max-w-2xl">
+      {/* Network Warning */}
+      <NetworkWarning className="mb-4" />
+
       {/* Header */}
       <div className="text-center mb-8">
         <h1 className="text-3xl font-bold text-slate-100 mb-2">
@@ -224,6 +247,7 @@ export function ReceiverView() {
                 value={getConnectionUrl()}
                 size={200}
                 roomCode={roomCode}
+                expiresAt={roomCreatedAt ? roomCreatedAt + SECURITY_CONSTANTS.ROOM_CODE_EXPIRY_MS : undefined}
                 className="py-4"
               />
             )}
@@ -376,30 +400,45 @@ export function ReceiverView() {
                   showProgress
                 />
               ) : receivedFiles.length > 0 ? (
-                <FileList
-                  files={receivedFiles}
-                  progress={new Map(receivedFiles.map(f => [f.id, {
-                    fileId: f.id,
-                    fileName: f.name,
-                    fileSize: f.size,
-                    bytesTransferred: f.size,
-                    percentage: 100,
-                    speed: 0,
-                    estimatedTimeRemaining: 0,
-                    status: 'completed' as const,
-                  }]))}
-                  onPreview={(file) => {
-                    const received = receivedFiles.find(f => f.id === file.id);
-                    if (received) {
+                // Use FileGallery on mobile for better download experience
+                deviceInfo.isMobile ? (
+                  <FileGallery
+                    files={receivedFiles}
+                    onPreview={(file) => {
                       setPreviewFile({
-                        name: received.name,
-                        size: received.size,
-                        type: received.type,
-                        blob: received.blob,
+                        name: file.name,
+                        size: file.size,
+                        type: file.type,
+                        blob: file.blob,
                       });
-                    }
-                  }}
-                />
+                    }}
+                  />
+                ) : (
+                  <FileList
+                    files={receivedFiles}
+                    progress={new Map(receivedFiles.map(f => [f.id, {
+                      fileId: f.id,
+                      fileName: f.name,
+                      fileSize: f.size,
+                      bytesTransferred: f.size,
+                      percentage: 100,
+                      speed: 0,
+                      estimatedTimeRemaining: 0,
+                      status: 'completed' as const,
+                    }]))}
+                    onPreview={(file) => {
+                      const received = receivedFiles.find(f => f.id === file.id);
+                      if (received) {
+                        setPreviewFile({
+                          name: received.name,
+                          size: received.size,
+                          type: received.type,
+                          blob: received.blob,
+                        });
+                      }
+                    }}
+                  />
+                )
               ) : (
                 <div className="text-center py-8 text-slate-500">
                   <svg className="w-12 h-12 mx-auto mb-3 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor">

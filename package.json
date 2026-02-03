@@ -10,6 +10,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@types/jszip": "^3.4.0",
+    "jszip": "^3.10.1",
     "peerjs": "^1.5.4",
     "qrcode": "^1.5.4",
     "react": "^18.3.1",
