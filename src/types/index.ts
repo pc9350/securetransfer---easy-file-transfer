@@ -220,7 +220,7 @@ export interface DeviceInfo {
 export const FILE_CONSTANTS = {
   MAX_FILE_SIZE: 2 * 1024 * 1024 * 1024, // 2GB
   MAX_SESSION_SIZE: 10 * 1024 * 1024 * 1024, // 10GB
-  CHUNK_SIZE: 64 * 1024, // 64KB
+  CHUNK_SIZE: 256 * 1024, // 256KB — 4× larger than before, reduces chunk count per GB from 16K→4K
   MAX_FILES_PER_BATCH: 500,
 } as const;
 
@@ -237,17 +237,50 @@ export const SECURITY_CONSTANTS = {
 } as const;
 
 export const ALLOWED_FILE_TYPES = {
-  images: ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/heic', 'image/heif'],
-  videos: ['video/mp4', 'video/quicktime', 'video/x-m4v', 'video/webm'],
+  images: [
+    'image/jpeg', 'image/png', 'image/gif', 'image/webp',
+    'image/heic', 'image/heif',
+    'image/svg+xml', 'image/avif', 'image/tiff', 'image/bmp',
+  ],
+  videos: [
+    'video/mp4', 'video/quicktime', 'video/x-m4v', 'video/webm',
+    'video/x-matroska',
+  ],
   documents: [
     'application/pdf',
     'application/msword',
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    'text/plain',
+    'application/vnd.ms-powerpoint',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
     'application/vnd.ms-excel',
     'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.oasis.opendocument.text',
+    'application/vnd.oasis.opendocument.spreadsheet',
+    'application/vnd.oasis.opendocument.presentation',
+    'application/epub+zip',
+    'application/rtf',
+    'text/plain',
+    'text/csv',
+    'text/markdown',
+    'text/x-markdown',
+    'application/json',
+    'application/xml',
+    'text/xml',
   ],
-  audio: ['audio/mpeg', 'audio/mp4', 'audio/wav', 'audio/ogg'],
+  audio: [
+    'audio/mpeg', 'audio/mp4', 'audio/wav', 'audio/ogg',
+    'audio/flac', 'audio/aac', 'audio/x-m4a', 'audio/opus',
+  ],
+  archives: [
+    'application/zip',
+    'application/x-zip-compressed',
+    'application/x-7z-compressed',
+    'application/vnd.rar',
+    'application/x-rar-compressed',
+    'application/gzip',
+    'application/x-tar',
+    'application/x-bzip2',
+  ],
 } as const;
 
 export const BLOCKED_EXTENSIONS = [

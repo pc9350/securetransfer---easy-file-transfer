@@ -29,6 +29,7 @@ import {
 
 interface UseFileTransferOptions {
   sendMessage: (message: PeerMessage) => boolean;
+  getBufferedAmount?: () => number;
   onProgress?: (fileProgress: TransferProgress, batchProgress: BatchProgress) => void;
   onFileReceived?: (file: Blob, metadata: FileMetadata) => void;
   onTransferComplete?: () => void;
@@ -46,7 +47,7 @@ interface UseFileTransferReturn {
 }
 
 export function useFileTransfer(options: UseFileTransferOptions): UseFileTransferReturn {
-  const { sendMessage, onProgress, onFileReceived, onTransferComplete, onError } = options;
+  const { sendMessage, getBufferedAmount, onProgress, onFileReceived, onTransferComplete, onError } = options;
 
   const [fileProgress, setFileProgress] = useState<Map<string, TransferProgress>>(new Map());
   const [batchProgress, setBatchProgress] = useState<BatchProgress>({
@@ -69,6 +70,16 @@ export function useFileTransfer(options: UseFileTransferOptions): UseFileTransfe
   const speedSamplesRef = useRef<number[]>([]);
   const lastSpeedUpdateRef = useRef<number>(0);
   const lastBytesRef = useRef<number>(0);
+
+  // Per-file byte tracking ref (fixes stale-closure bug in totalBytesTransferred calculation)
+  const fileBytesRef = useRef<Map<string, number>>(new Map());
+  // Throttle progress state updates to max ~10/sec to prevent UI jank on large batches
+  const lastProgressUpdateRef = useRef<number>(0);
+  // O(1) receiver-side byte tracking (replaces O(n²) chunk iteration on every incoming chunk)
+  const totalBytesReceivedRef = useRef<number>(0);
+  const fileBytesReceivedRef = useRef<Map<string, number>>(new Map());
+  // Per-file chunk checksums used to verify the chain hash sent in file_complete
+  const receivedFileChecksumsRef = useRef<Map<string, string[]>>(new Map());
 
   // Update file progress
   const updateFileProgress = useCallback((fileId: string, updates: Partial<TransferProgress>) => {
@@ -109,30 +120,44 @@ export function useFileTransfer(options: UseFileTransferOptions): UseFileTransfe
   const sendFiles = useCallback(async (files: File[]) => {
     if (files.length === 0) return;
 
+    // Guard: enforce batch size limit
+    if (files.length > FILE_CONSTANTS.MAX_FILES_PER_BATCH) {
+      onError?.(`Too many files: maximum is ${FILE_CONSTANTS.MAX_FILES_PER_BATCH} files per transfer`);
+      return;
+    }
+
     cancelledRef.current = false;
     setIsSending(true);
     transferStartTimeRef.current = Date.now();
     speedSamplesRef.current = [];
     lastSpeedUpdateRef.current = Date.now();
     lastBytesRef.current = 0;
+    fileBytesRef.current = new Map();
+    lastProgressUpdateRef.current = 0;
 
-    // Validate all files first
+    // Validate and create metadata for all files in parallel
+    const results = await Promise.all(
+      files.map(async (file) => {
+        const validation = await validateFile(file);
+        if (!validation.isValid) return { file, validation, metadata: null };
+        const metadata = await createFileMetadata(file);
+        return { file, validation, metadata };
+      })
+    );
+
     const validFiles: Array<{ file: File; metadata: FileMetadata }> = [];
     let totalSize = 0;
 
-    for (const file of files) {
-      const validation = await validateFile(file);
-      
+    for (const { file, validation, metadata } of results) {
       if (!validation.isValid) {
         logFileValidationFailed(file.name, validation.errors);
         onError?.(`File "${file.name}" failed validation: ${validation.errors.join(', ')}`);
         continue;
       }
-
       logFileValidationPassed(file.name, file.size);
-      const metadata = await createFileMetadata(file);
-      validFiles.push({ file, metadata });
+      validFiles.push({ file, metadata: metadata! });
       totalSize += file.size;
+      fileBytesRef.current.set(metadata!.id, 0);
     }
 
     if (validFiles.length === 0) {
@@ -141,7 +166,6 @@ export function useFileTransfer(options: UseFileTransferOptions): UseFileTransfe
       return;
     }
 
-    // Check session size limit
     if (totalSize > FILE_CONSTANTS.MAX_SESSION_SIZE) {
       setIsSending(false);
       onError?.(`Total size (${formatFileSize(totalSize)}) exceeds session limit of ${formatFileSize(FILE_CONSTANTS.MAX_SESSION_SIZE)}`);
@@ -178,78 +202,42 @@ export function useFileTransfer(options: UseFileTransferOptions): UseFileTransfe
     };
     setBatchProgress(initialBatch);
 
-    // Generate batch ID
     const batchId = `batch-${Date.now()}`;
+    sendMessage({ type: 'batch_start', timestamp: Date.now(), payload: { batchId, totalFiles: validFiles.length, totalSize } });
 
-    // Send batch start message
-    const batchStartMessage: PeerMessage = {
-      type: 'batch_start',
-      timestamp: Date.now(),
-      payload: {
-        batchId,
-        totalFiles: validFiles.length,
-        totalSize,
-      },
-    };
-    sendMessage(batchStartMessage);
-
-    let totalBytesTransferred = 0;
-
-    // Send each file
+    // Send each file sequentially
     for (let fileIndex = 0; fileIndex < validFiles.length; fileIndex++) {
       if (cancelledRef.current) break;
 
       const { file, metadata } = validFiles[fileIndex]!;
 
-      // Update current file
-      setBatchProgress(prev => ({
-        ...prev,
-        currentFileId: metadata.id,
-      }));
-
+      setBatchProgress(prev => ({ ...prev, currentFileId: metadata.id }));
       updateFileProgress(metadata.id, { status: 'transferring' });
 
-      // Send metadata
-      const metadataPayload: FileMetadataPayload = {
-        ...metadata,
-        batchId,
-        fileIndex,
-        totalFilesInBatch: validFiles.length,
-      };
+      const metadataPayload: FileMetadataPayload = { ...metadata, batchId, fileIndex, totalFilesInBatch: validFiles.length };
+      sendMessage({ type: 'file_metadata', timestamp: Date.now(), payload: metadataPayload });
 
-      const metadataMessage: PeerMessage = {
-        type: 'file_metadata',
-        timestamp: Date.now(),
-        payload: metadataPayload,
-      };
-      sendMessage(metadataMessage);
-
-      // Send chunks
       let bytesTransferred = 0;
+      const chunkChecksums: string[] = [];
       for (let chunkIndex = 0; chunkIndex < metadata.totalChunks; chunkIndex++) {
         if (cancelledRef.current) break;
 
+        // Backpressure: pause sending if the WebRTC send buffer exceeds 1 MB
+        if (getBufferedAmount) {
+          while (getBufferedAmount() > 1024 * 1024) {
+            await new Promise(resolve => setTimeout(resolve, 10));
+          }
+        }
+
         const start = chunkIndex * FILE_CONSTANTS.CHUNK_SIZE;
         const end = Math.min(start + FILE_CONSTANTS.CHUNK_SIZE, file.size);
-        const chunk = file.slice(start, end);
-        const chunkData = await chunk.arrayBuffer();
+        const chunkData = await file.slice(start, end).arrayBuffer();
         const checksum = await generateChecksum(chunkData);
+        chunkChecksums.push(checksum);
 
-        const chunkPayload: FileChunkPayload = {
-          fileId: metadata.id,
-          chunkIndex,
-          totalChunks: metadata.totalChunks,
-          data: chunkData,
-          checksum,
-        };
+        const chunkPayload: FileChunkPayload = { fileId: metadata.id, chunkIndex, totalChunks: metadata.totalChunks, data: chunkData, checksum };
+        const sent = sendMessage({ type: 'file_chunk', timestamp: Date.now(), payload: chunkPayload });
 
-        const chunkMessage: PeerMessage = {
-          type: 'file_chunk',
-          timestamp: Date.now(),
-          payload: chunkPayload,
-        };
-
-        const sent = sendMessage(chunkMessage);
         if (!sent) {
           logTransferFailed('Failed to send chunk');
           updateFileProgress(metadata.id, { status: 'failed', error: 'Send failed' });
@@ -259,100 +247,53 @@ export function useFileTransfer(options: UseFileTransferOptions): UseFileTransfe
         }
 
         bytesTransferred = end;
-        totalBytesTransferred = totalBytesTransferred - (fileProgress.get(metadata.id)?.bytesTransferred || 0) + bytesTransferred;
 
+        // Use ref for totalBytes — avoids the stale-state closure bug when reading fileProgress
+        fileBytesRef.current.set(metadata.id, bytesTransferred);
+        const totalBytesTransferred = Array.from(fileBytesRef.current.values()).reduce((a, b) => a + b, 0);
         const speed = calculateSpeed(totalBytesTransferred);
-        const remaining = (totalSize - totalBytesTransferred) / speed;
+        const remaining = speed > 0 ? (totalSize - totalBytesTransferred) / speed : Infinity;
 
-        // Update progress (throttled)
-        const filePercentage = (bytesTransferred / file.size) * 100;
-        const overallPercentage = (totalBytesTransferred / totalSize) * 100;
+        // Throttle React state updates to ~10/sec to prevent jank with many files or small chunks
+        const now = Date.now();
+        if (now - lastProgressUpdateRef.current > 100) {
+          lastProgressUpdateRef.current = now;
+          const filePercentage = (bytesTransferred / file.size) * 100;
+          const overallPercentage = (totalBytesTransferred / totalSize) * 100;
 
-        updateFileProgress(metadata.id, {
-          bytesTransferred,
-          percentage: filePercentage,
-          speed,
-          estimatedTimeRemaining: remaining,
-        });
-
-        setBatchProgress(prev => ({
-          ...prev,
-          bytesTransferred: totalBytesTransferred,
-          overallPercentage,
-          averageSpeed: speed,
-        }));
-
-        onProgress?.(
-          {
-            fileId: metadata.id,
-            fileName: metadata.sanitizedName,
-            fileSize: metadata.size,
-            bytesTransferred,
-            percentage: filePercentage,
-            speed,
-            estimatedTimeRemaining: remaining,
-            status: 'transferring',
-          },
-          {
-            ...initialBatch,
-            bytesTransferred: totalBytesTransferred,
-            overallPercentage,
-            averageSpeed: speed,
-          }
-        );
-
-        // Small delay to prevent overwhelming the connection
-        await new Promise(resolve => setTimeout(resolve, 1));
+          updateFileProgress(metadata.id, { bytesTransferred, percentage: filePercentage, speed, estimatedTimeRemaining: remaining });
+          setBatchProgress(prev => ({ ...prev, bytesTransferred: totalBytesTransferred, overallPercentage, averageSpeed: speed }));
+          onProgress?.(
+            { fileId: metadata.id, fileName: metadata.sanitizedName, fileSize: metadata.size, bytesTransferred, percentage: filePercentage, speed, estimatedTimeRemaining: remaining, status: 'transferring' },
+            { ...initialBatch, bytesTransferred: totalBytesTransferred, overallPercentage, averageSpeed: speed }
+          );
+        }
       }
 
-      // Send file complete message
-      const completePayload: FileCompletePayload = {
-        fileId: metadata.id,
-        finalHash: metadata.hash || '',
-      };
+      // Chain hash: SHA-256 of all chunk checksums joined — proves every chunk arrived in
+      // the correct order without reading the full file into memory a second time
+      const chainHashBuffer = await crypto.subtle.digest(
+        'SHA-256',
+        new TextEncoder().encode(chunkChecksums.join(',')),
+      );
+      const finalHash = Array.from(new Uint8Array(chainHashBuffer))
+        .map(b => b.toString(16).padStart(2, '0')).join('');
 
-      const completeMessage: PeerMessage = {
-        type: 'file_complete',
-        timestamp: Date.now(),
-        payload: completePayload,
-      };
-      sendMessage(completeMessage);
-
-      updateFileProgress(metadata.id, { 
-        status: 'completed',
-        percentage: 100,
-        bytesTransferred: file.size,
-      });
-
-      setBatchProgress(prev => ({
-        ...prev,
-        completedFiles: prev.completedFiles + 1,
-      }));
+      sendMessage({ type: 'file_complete', timestamp: Date.now(), payload: { fileId: metadata.id, finalHash } as FileCompletePayload });
+      updateFileProgress(metadata.id, { status: 'completed', percentage: 100, bytesTransferred: file.size });
+      setBatchProgress(prev => ({ ...prev, completedFiles: prev.completedFiles + 1 }));
     }
 
-    // Send batch complete
     if (!cancelledRef.current) {
-      const batchCompleteMessage: PeerMessage = {
-        type: 'batch_complete',
-        timestamp: Date.now(),
-        payload: { batchId },
-      };
-      sendMessage(batchCompleteMessage);
-
+      sendMessage({ type: 'batch_complete', timestamp: Date.now(), payload: { batchId } });
       const duration = Date.now() - transferStartTimeRef.current;
       logTransferCompleted(validFiles.length, totalSize, duration);
-
-      setBatchProgress(prev => ({
-        ...prev,
-        status: 'completed',
-        overallPercentage: 100,
-      }));
-
+      setBatchProgress(prev => ({ ...prev, status: 'completed', overallPercentage: 100 }));
       onTransferComplete?.();
     }
 
     setIsSending(false);
-  }, [sendMessage, onProgress, onTransferComplete, onError, updateFileProgress, calculateSpeed, fileProgress]);
+  }, [sendMessage, getBufferedAmount, onProgress, onTransferComplete, onError, updateFileProgress, calculateSpeed]);
 
   // Handle incoming messages
   const handleMessage = useCallback((message: PeerMessage) => {
@@ -366,6 +307,10 @@ export function useFileTransfer(options: UseFileTransferOptions): UseFileTransfe
         lastBytesRef.current = 0;
         receivedChunksRef.current = new Map();
         fileMetadataRef.current = new Map();
+        totalBytesReceivedRef.current = 0;
+        fileBytesReceivedRef.current = new Map();
+        receivedFileChecksumsRef.current = new Map();
+        lastProgressUpdateRef.current = 0;
 
         setBatchProgress({
           totalFiles,
@@ -392,6 +337,7 @@ export function useFileTransfer(options: UseFileTransferOptions): UseFileTransfe
         
         fileMetadataRef.current.set(metadata.id, sanitizedMetadata);
         receivedChunksRef.current.set(metadata.id, []);
+        receivedFileChecksumsRef.current.set(metadata.id, []);
 
         setFileProgress(prev => {
           const newMap = new Map(prev);
@@ -418,13 +364,12 @@ export function useFileTransfer(options: UseFileTransferOptions): UseFileTransfe
       case 'file_chunk': {
         const chunk = message.payload as FileChunkPayload;
         const chunks = receivedChunksRef.current.get(chunk.fileId);
-        
+
         if (!chunks) {
           onError?.('Received chunk for unknown file');
           return;
         }
 
-        // Verify checksum
         verifyChecksum(chunk.data, chunk.checksum).then(isValid => {
           if (!isValid) {
             logTransferFailed('Chunk checksum mismatch');
@@ -434,76 +379,88 @@ export function useFileTransfer(options: UseFileTransferOptions): UseFileTransfe
 
           chunks[chunk.chunkIndex] = chunk.data;
 
-          // Calculate progress
-          const bytesTransferred = chunks.reduce((sum, c) => sum + (c?.byteLength || 0), 0);
+          // Store checksum so we can verify the chain hash on file_complete
+          const fileChecksums = receivedFileChecksumsRef.current.get(chunk.fileId);
+          if (fileChecksums) fileChecksums[chunk.chunkIndex] = chunk.checksum;
+
+          // O(1) byte tracking via refs instead of O(n²) chunk iteration on every message
+          const prevFileBytes = fileBytesReceivedRef.current.get(chunk.fileId) ?? 0;
+          const newFileBytes = prevFileBytes + chunk.data.byteLength;
+          fileBytesReceivedRef.current.set(chunk.fileId, newFileBytes);
+          totalBytesReceivedRef.current += chunk.data.byteLength;
+
           const metadata = fileMetadataRef.current.get(chunk.fileId);
-          
           if (metadata) {
-            const filePercentage = (bytesTransferred / metadata.size) * 100;
-            
-            setFileProgress(prev => {
-              const newMap = new Map(prev);
-              const current = newMap.get(chunk.fileId);
-              if (current) {
-                newMap.set(chunk.fileId, {
-                  ...current,
-                  bytesTransferred,
-                  percentage: filePercentage,
-                });
-              }
-              return newMap;
-            });
-
-            // Update batch progress
-            let totalBytesReceived = 0;
-            receivedChunksRef.current.forEach(fileChunks => {
-              totalBytesReceived += fileChunks.reduce((sum, c) => sum + (c?.byteLength || 0), 0);
-            });
-
+            const totalBytesReceived = totalBytesReceivedRef.current;
             const speed = calculateSpeed(totalBytesReceived);
-            
-            setBatchProgress(prev => {
-              const overallPercentage = (totalBytesReceived / prev.totalBytes) * 100;
-              return {
+
+            // Throttle state updates to ~10/sec to prevent jank with large batches
+            const now = Date.now();
+            if (now - lastProgressUpdateRef.current > 100) {
+              lastProgressUpdateRef.current = now;
+              const filePercentage = (newFileBytes / metadata.size) * 100;
+
+              setFileProgress(prev => {
+                const newMap = new Map(prev);
+                const current = newMap.get(chunk.fileId);
+                if (current) {
+                  newMap.set(chunk.fileId, { ...current, bytesTransferred: newFileBytes, percentage: filePercentage, speed });
+                }
+                return newMap;
+              });
+
+              setBatchProgress(prev => ({
                 ...prev,
                 bytesTransferred: totalBytesReceived,
-                overallPercentage,
+                overallPercentage: prev.totalBytes > 0 ? (totalBytesReceived / prev.totalBytes) * 100 : 0,
                 averageSpeed: speed,
-              };
-            });
+              }));
+            }
           }
         });
         break;
       }
 
       case 'file_complete': {
-        const { fileId } = message.payload as FileCompletePayload;
+        const { fileId, finalHash } = message.payload as FileCompletePayload;
         const chunks = receivedChunksRef.current.get(fileId);
         const metadata = fileMetadataRef.current.get(fileId);
+        const fileChecksums = receivedFileChecksumsRef.current.get(fileId);
 
         if (!chunks || !metadata) {
           onError?.('File completion for unknown file');
           return;
         }
 
-        // Assemble file
-        const blob = new Blob(chunks.filter(c => c !== undefined), { type: metadata.type });
+        // Async: verify chain hash then deliver — uses an IIFE to keep handleMessage synchronous
+        void (async () => {
+          if (finalHash && fileChecksums) {
+            const chainHashBuffer = await crypto.subtle.digest(
+              'SHA-256',
+              new TextEncoder().encode(fileChecksums.join(',')),
+            );
+            const computedHash = Array.from(new Uint8Array(chainHashBuffer))
+              .map(b => b.toString(16).padStart(2, '0')).join('');
 
-        updateFileProgress(fileId, {
-          status: 'completed',
-          percentage: 100,
-          bytesTransferred: metadata.size,
-        });
+            if (computedHash !== finalHash) {
+              logTransferFailed(`Chain hash mismatch for ${metadata.name}`);
+              onError?.(`File "${metadata.sanitizedName}" failed integrity check — the transfer may be corrupted`);
+              receivedChunksRef.current.delete(fileId);
+              receivedFileChecksumsRef.current.delete(fileId);
+              return;
+            }
+          }
 
-        setBatchProgress(prev => ({
-          ...prev,
-          completedFiles: prev.completedFiles + 1,
-        }));
+          const blob = new Blob(chunks.filter(c => c !== undefined), { type: metadata.type });
 
-        // Clear chunks from memory
-        receivedChunksRef.current.delete(fileId);
+          updateFileProgress(fileId, { status: 'completed', percentage: 100, bytesTransferred: metadata.size });
+          setBatchProgress(prev => ({ ...prev, completedFiles: prev.completedFiles + 1 }));
 
-        onFileReceived?.(blob, metadata);
+          receivedChunksRef.current.delete(fileId);
+          receivedFileChecksumsRef.current.delete(fileId);
+
+          onFileReceived?.(blob, metadata);
+        })();
         break;
       }
 

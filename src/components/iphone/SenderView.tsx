@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { useSearchParams } from "react-router-dom";
+import JSZip from "jszip";
 import { useWebRTC } from "../../hooks/useWebRTC";
 import { useFileTransfer } from "../../hooks/useFileTransfer";
 import { useBeforeUnload } from "../../hooks/useBeforeUnload";
@@ -21,6 +22,7 @@ import {
 import {
   isValidRoomCodeFormat,
   normalizeRoomCode,
+  formatRoomCode,
 } from "../../utils/security";
 import { generateFileId } from "../../utils/fileValidation";
 
@@ -45,6 +47,7 @@ export function SenderView() {
   const [filesBeingAdded, setFilesBeingAdded] = useState(0);
   const [isDragOver, setIsDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
 
   // Preview state
   const [previewFile, setPreviewFile] = useState<{
@@ -63,7 +66,7 @@ export function SenderView() {
   }, []);
 
   // Initialize WebRTC
-  const { connectionInfo, connect, disconnect, sendMessage, isConnected } =
+  const { connectionInfo, connect, disconnect, sendMessage, getBufferedAmount, isConnected } =
     useWebRTC({
       mode: "client",
       onPinRequired: handlePinRequired,
@@ -91,6 +94,7 @@ export function SenderView() {
   const { sendFiles, fileProgress, batchProgress, isSending, cancelTransfer } =
     useFileTransfer({
       sendMessage,
+      getBufferedAmount,
       onProgress: handleProgress,
       onTransferComplete: () => {
         toast.success(
@@ -133,6 +137,57 @@ export function SenderView() {
     },
     [roomCode, connect, toast],
   );
+
+  // Paste room code from clipboard
+  const handlePasteRoomCode = useCallback(async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      const normalized = normalizeRoomCode(text.trim());
+      if (isValidRoomCodeFormat(normalized)) {
+        setRoomCode(formatRoomCode(normalized));
+        toast.success('Pasted', 'Room code pasted from clipboard');
+      } else {
+        toast.error('Invalid code', 'Clipboard does not contain a valid room code');
+      }
+    } catch {
+      toast.error('Paste failed', 'Could not read from clipboard — try typing the code');
+    }
+  }, [toast]);
+
+  // Zip a folder selected via webkitdirectory and add it as a single file to the send list
+  const handleFolderSelect = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? []);
+    if (folderInputRef.current) folderInputRef.current.value = '';
+    if (files.length === 0) return;
+
+    const folderName = (files[0]?.webkitRelativePath ?? '').split('/')[0] ?? 'folder';
+    const totalBytes = files.reduce((sum, f) => sum + f.size, 0);
+
+    if (totalBytes > 1024 * 1024 * 1024) {
+      toast.error('Folder too large', 'Folders over 1 GB must be zipped manually before sending');
+      return;
+    }
+
+    setIsLoadingFiles(true);
+    setLoadingMessage(`Zipping "${folderName}" (${files.length} files)…`);
+
+    try {
+      const zip = new JSZip();
+      for (const file of files) {
+        zip.file(file.webkitRelativePath || file.name, file);
+      }
+      const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } });
+      const zipFile = new File([zipBlob], `${folderName}.zip`, { type: 'application/zip' });
+      const fileWithPreview: FileWithPreview = Object.assign(zipFile, { id: generateFileId() });
+      setSelectedFiles(prev => [...prev, fileWithPreview]);
+      toast.success('Folder zipped', `"${folderName}.zip" — ${formatFileSize(zipBlob.size)}`);
+    } catch {
+      toast.error('Zip failed', 'Could not compress the folder');
+    } finally {
+      setIsLoadingFiles(false);
+      setLoadingMessage('');
+    }
+  }, [toast]);
 
   // Ref to hold the latest handleConnect function
   const handleConnectRef = useRef(handleConnect);
@@ -459,7 +514,7 @@ export function SenderView() {
                 </div>
               </div>
 
-              <div className="flex gap-3">
+              <div className="flex gap-2">
                 <input
                   type="text"
                   value={roomCode}
@@ -469,6 +524,15 @@ export function SenderView() {
                   maxLength={9}
                   disabled={connectionInfo.state === "connecting"}
                 />
+                <button
+                  type="button"
+                  onClick={handlePasteRoomCode}
+                  disabled={connectionInfo.state === "connecting"}
+                  title="Paste room code from clipboard"
+                  className="px-3 py-2 rounded-lg border border-slate-600 text-slate-400 hover:text-slate-200 hover:border-slate-400 transition-colors text-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Paste
+                </button>
                 <Button
                   variant="primary"
                   onClick={() => handleConnect()}
@@ -505,15 +569,27 @@ export function SenderView() {
               </Button>
             </div>
 
-            {/* File Input */}
+            {/* File inputs */}
             <input
               ref={fileInputRef}
               type="file"
               multiple
-              accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.txt,.xls,.xlsx"
+              accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.txt,.xls,.xlsx,.zip,.7z,.rar,.gz,.csv,.json,.md"
               onChange={handleFileSelect}
               className="hidden"
               id="file-input"
+              disabled={isLoadingFiles}
+            />
+            {/* Folder input — webkitdirectory lets the user pick an entire folder */}
+            <input
+              ref={folderInputRef}
+              type="file"
+              multiple
+              // @ts-expect-error webkitdirectory is non-standard but universally supported
+              webkitdirectory=""
+              className="hidden"
+              id="folder-input"
+              onChange={handleFolderSelect}
               disabled={isLoadingFiles}
             />
 
@@ -565,11 +641,26 @@ export function SenderView() {
                         : "Tap to select or drop files"}
                     </span>
                     <span className="text-xs text-slate-500 mt-1">
-                      Photos, videos, documents
+                      Photos, videos, documents, archives
                     </span>
                   </>
                 )}
               </label>
+            )}
+
+            {/* Add Folder button — zips folder client-side before sending */}
+            {!isSending && (
+              <button
+                type="button"
+                onClick={() => folderInputRef.current?.click()}
+                disabled={isLoadingFiles}
+                className="w-full flex items-center justify-center gap-2 py-2 rounded-lg border border-dashed border-slate-700 text-slate-500 hover:border-slate-500 hover:text-slate-300 transition-colors text-sm disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
+                </svg>
+                Add Folder <span className="text-xs text-slate-600">(auto-zipped, max 1 GB)</span>
+              </button>
             )}
 
             {/* Transfer Progress */}

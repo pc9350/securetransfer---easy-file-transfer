@@ -5,16 +5,18 @@ import {
   PeerMessage, 
   SECURITY_CONSTANTS 
 } from '../types';
-import { 
-  generateSecureRoomCode, 
-  normalizeRoomCode, 
-  createSession, 
+import {
+  generateSecureRoomCode,
+  normalizeRoomCode,
+  createSession,
   destroySession,
   isRateLimited,
   recordAttempt,
   clearRateLimit,
   hashPin,
+  generatePinSalt,
 } from '../utils/security';
+import { parseIncomingMessage } from '../utils/messageValidation';
 import { 
   logRoomCreated, 
   logConnectionAttempt, 
@@ -42,6 +44,7 @@ interface UseWebRTCReturn {
   connect: (roomCode?: string) => Promise<void>;
   disconnect: () => void;
   sendMessage: (message: PeerMessage) => boolean;
+  getBufferedAmount: () => number;
   setPin: (pin: string) => Promise<void>;
   roomCode: string | null;
   isConnected: boolean;
@@ -75,8 +78,12 @@ export function useWebRTC(options: UseWebRTCOptions): UseWebRTCReturn {
   const connectionRef = useRef<DataConnection | null>(null);
   const heartbeatIntervalRef = useRef<number | null>(null);
   const pinHashRef = useRef<string | null>(null);
+  const pinSaltRef = useRef<string | null>(null);
   const pinAttemptsRef = useRef<number>(0);
   const isConnectingRef = useRef<boolean>(false);
+  // Incremented each time a new connection attempt starts; lets async callbacks
+  // detect that they've been superseded (e.g. by React StrictMode double-mount).
+  const connectionGenerationRef = useRef<number>(0);
 
   // Store roomCode in a ref to avoid dependency issues
   const roomCodeRef = useRef<string | null>(null);
@@ -128,7 +135,10 @@ export function useWebRTC(options: UseWebRTCOptions): UseWebRTCReturn {
     }
 
     pinHashRef.current = null;
+    pinSaltRef.current = null;
     pinAttemptsRef.current = 0;
+    // Reset so a remount (e.g. React StrictMode) can start a fresh connection
+    isConnectingRef.current = false;
   }, []); // Empty deps - cleanup function never changes
 
   // Update connection state
@@ -149,6 +159,14 @@ export function useWebRTC(options: UseWebRTCOptions): UseWebRTCReturn {
       logError('Failed to send message');
       return false;
     }
+  }, []);
+
+  // Returns the number of bytes queued in the WebRTC send buffer.
+  // Used by the sender for backpressure — wait before sending more chunks when this is high.
+  const getBufferedAmount = useCallback((): number => {
+    if (!connectionRef.current) return 0;
+    const dc = (connectionRef.current as DataConnection & { dataChannel?: RTCDataChannel }).dataChannel;
+    return dc?.bufferedAmount ?? 0;
   }, []);
 
   // Start heartbeat
@@ -199,11 +217,11 @@ export function useWebRTC(options: UseWebRTCOptions): UseWebRTCReturn {
             logConnectionApproved(remotePeerId);
 
             if (pinHashRef.current) {
-              // PIN is required
+              // Send PIN required along with the salt the client must use for PBKDF2
               const response: PeerMessage = {
                 type: 'pin_required',
                 timestamp: Date.now(),
-                payload: null,
+                payload: { salt: pinSaltRef.current },
               };
               sendMessage(response);
               updateState({ isPinRequired: true });
@@ -264,30 +282,26 @@ export function useWebRTC(options: UseWebRTCOptions): UseWebRTCReturn {
         break;
 
       case 'pin_required':
-        // Client needs to enter PIN
-        if (mode === 'client' && onPinRequired) {
+        // Client receives PIN challenge — payload contains the PBKDF2 salt from host
+        if (mode === 'client' && onPinRequiredRef.current) {
+          const { salt } = message.payload as { salt?: string };
+          if (!salt) {
+            onErrorRef.current?.('Incompatible peer: please ensure both devices are on the latest version');
+            break;
+          }
+          pinSaltRef.current = salt;
           updateState({ isPinRequired: true });
-          const pin = await onPinRequired();
-          
+          const pin = await onPinRequiredRef.current();
+
           if (pin) {
-            const hashedPin = await hashPin(pin);
-            const response: PeerMessage = {
+            const hashedPin = await hashPin(pin, salt);
+            sendMessage({
               type: 'pin_attempt',
               timestamp: Date.now(),
-              payload: { 
-                hashedPin,
-                attemptNumber: pinAttemptsRef.current + 1,
-              },
-            };
-            sendMessage(response);
+              payload: { hashedPin, attemptNumber: pinAttemptsRef.current + 1 },
+            });
           } else {
-            // User cancelled PIN entry
-            const response: PeerMessage = {
-              type: 'disconnect',
-              timestamp: Date.now(),
-              payload: null,
-            };
-            sendMessage(response);
+            sendMessage({ type: 'disconnect', timestamp: Date.now(), payload: null });
             cleanup();
             updateState({ state: 'idle', error: 'PIN entry cancelled' });
           }
@@ -356,23 +370,19 @@ export function useWebRTC(options: UseWebRTCOptions): UseWebRTCReturn {
         break;
 
       case 'pin_invalid':
-        // Client PIN was wrong
-        if (mode === 'client' && onPinRequired) {
+        // Client PIN was wrong — retry using the same salt from pin_required
+        if (mode === 'client' && onPinRequiredRef.current) {
           const { attemptsRemaining } = message.payload as { attemptsRemaining: number };
           onErrorRef.current?.(`Invalid PIN. ${attemptsRemaining} attempts remaining.`);
-          
-          const pin = await onPinRequired();
-          if (pin) {
-            const hashedPin = await hashPin(pin);
-            const response: PeerMessage = {
+
+          const pin = await onPinRequiredRef.current();
+          if (pin && pinSaltRef.current) {
+            const hashedPin = await hashPin(pin, pinSaltRef.current);
+            sendMessage({
               type: 'pin_attempt',
               timestamp: Date.now(),
-              payload: { 
-                hashedPin,
-                attemptNumber: SECURITY_CONSTANTS.MAX_PIN_ATTEMPTS - attemptsRemaining + 1,
-              },
-            };
-            sendMessage(response);
+              payload: { hashedPin, attemptNumber: SECURITY_CONSTANTS.MAX_PIN_ATTEMPTS - attemptsRemaining + 1 },
+            });
           }
         }
         break;
@@ -396,6 +406,8 @@ export function useWebRTC(options: UseWebRTCOptions): UseWebRTCReturn {
 
   // Initialize peer connection - let PeerJS generate ID for better compatibility
   const initializePeer = useCallback((peerId: string): Promise<Peer> => {
+    const myGeneration = ++connectionGenerationRef.current;
+
     return new Promise((resolve, reject) => {
       // Add prefix to make IDs more unique and avoid collisions
       const fullPeerId = `st-${peerId.toLowerCase()}`;
@@ -424,6 +436,12 @@ export function useWebRTC(options: UseWebRTCOptions): UseWebRTCReturn {
 
       peer.on('open', (id) => {
         if (hasResolved) return;
+        // If a newer connection attempt started while we were waiting, discard this peer
+        if (connectionGenerationRef.current !== myGeneration) {
+          peer.destroy();
+          reject(new Error('Superseded by newer connection attempt'));
+          return;
+        }
         hasResolved = true;
         clearTimeout(timeout);
         reconnectAttempts = 0;
@@ -515,7 +533,8 @@ export function useWebRTC(options: UseWebRTCOptions): UseWebRTCReturn {
         });
 
         conn.on('data', (data) => {
-          handleMessage(data as PeerMessage);
+          const message = parseIncomingMessage(data);
+          if (message) handleMessage(message);
         });
 
         conn.on('close', () => {
@@ -682,9 +701,11 @@ export function useWebRTC(options: UseWebRTCOptions): UseWebRTCReturn {
     });
   }, [sendMessage, cleanup, updateState]);
 
-  // Set PIN for session
+  // Set PIN for session — generates a fresh PBKDF2 salt each time
   const setPin = useCallback(async (pin: string) => {
-    const hashedPin = await hashPin(pin);
+    const salt = generatePinSalt();
+    const hashedPin = await hashPin(pin, salt);
+    pinSaltRef.current = salt;
     pinHashRef.current = hashedPin;
     updateState({ isPinRequired: true });
   }, [updateState]);
@@ -701,6 +722,7 @@ export function useWebRTC(options: UseWebRTCOptions): UseWebRTCReturn {
     connect,
     disconnect,
     sendMessage,
+    getBufferedAmount,
     setPin,
     roomCode: connectionInfo.roomCode,
     isConnected: connectionInfo.state === 'connected',

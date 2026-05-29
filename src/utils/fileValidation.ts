@@ -5,7 +5,7 @@ import {
   FileValidationResult,
   FileMetadata 
 } from '../types';
-import { sanitizeFileName, generateChecksum } from './security';
+import { sanitizeFileName } from './security';
 
 // ============================================
 // Magic Bytes (File Signatures)
@@ -16,18 +16,42 @@ const MAGIC_BYTES: Record<string, number[][]> = {
   'image/jpeg': [[0xFF, 0xD8, 0xFF]],
   'image/png': [[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]],
   'image/gif': [[0x47, 0x49, 0x46, 0x38, 0x37, 0x61], [0x47, 0x49, 0x46, 0x38, 0x39, 0x61]],
-  'image/webp': [[0x52, 0x49, 0x46, 0x46]], // RIFF header (WebP has WEBP after size)
-  
+  'image/webp': [[0x52, 0x49, 0x46, 0x46]],
+  'image/tiff': [[0x49, 0x49, 0x2A, 0x00], [0x4D, 0x4D, 0x00, 0x2A]], // little-endian and big-endian
+  'image/bmp':  [[0x42, 0x4D]], // BM
+  // SVG is XML-based; check for '<svg' or '<?xml'
+  'image/svg+xml': [[0x3C, 0x73, 0x76, 0x67], [0x3C, 0x3F, 0x78, 0x6D, 0x6C]],
+
   // Videos
-  'video/mp4': [[0x00, 0x00, 0x00], [0x66, 0x74, 0x79, 0x70]], // ftyp
+  'video/mp4': [[0x00, 0x00, 0x00], [0x66, 0x74, 0x79, 0x70]], // ftyp box
   'video/quicktime': [[0x00, 0x00, 0x00]],
-  'video/webm': [[0x1A, 0x45, 0xDF, 0xA3]],
-  
+  'video/webm': [[0x1A, 0x45, 0xDF, 0xA3]], // EBML
+  'video/x-matroska': [[0x1A, 0x45, 0xDF, 0xA3]], // MKV uses same EBML header as WebM
+
+  // Audio
+  'audio/mpeg': [[0xFF, 0xFB], [0xFF, 0xF3], [0xFF, 0xF2], [0x49, 0x44, 0x33]], // MP3 sync or ID3 tag
+  'audio/flac': [[0x66, 0x4C, 0x61, 0x43]], // fLaC
+
   // Documents
   'application/pdf': [[0x25, 0x50, 0x44, 0x46]], // %PDF
-  'application/zip': [[0x50, 0x4B, 0x03, 0x04], [0x50, 0x4B, 0x05, 0x06]], // PK
-  'application/msword': [[0xD0, 0xCF, 0x11, 0xE0]], // OLE
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': [[0x50, 0x4B, 0x03, 0x04]],
+  'application/msword': [[0xD0, 0xCF, 0x11, 0xE0]], // OLE2 (legacy .doc)
+  // All ZIP-based formats share the PK magic bytes
+  'application/zip':                [[0x50, 0x4B, 0x03, 0x04], [0x50, 0x4B, 0x05, 0x06]],
+  'application/x-zip-compressed':   [[0x50, 0x4B, 0x03, 0x04], [0x50, 0x4B, 0x05, 0x06]],
+  'application/epub+zip':           [[0x50, 0x4B, 0x03, 0x04]],
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document':     [[0x50, 0x4B, 0x03, 0x04]],
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':           [[0x50, 0x4B, 0x03, 0x04]],
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation':   [[0x50, 0x4B, 0x03, 0x04]],
+  'application/vnd.oasis.opendocument.text':         [[0x50, 0x4B, 0x03, 0x04]],
+  'application/vnd.oasis.opendocument.spreadsheet':  [[0x50, 0x4B, 0x03, 0x04]],
+  'application/vnd.oasis.opendocument.presentation': [[0x50, 0x4B, 0x03, 0x04]],
+
+  // Archives
+  'application/x-7z-compressed':  [[0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C]], // 7z
+  'application/vnd.rar':          [[0x52, 0x61, 0x72, 0x21, 0x1A, 0x07]], // RAR
+  'application/x-rar-compressed': [[0x52, 0x61, 0x72, 0x21, 0x1A, 0x07]],
+  'application/gzip':             [[0x1F, 0x8B]], // gzip
+  'application/x-bzip2':          [[0x42, 0x5A, 0x68]], // BZh
 };
 
 // ============================================
@@ -60,6 +84,7 @@ export function isAllowedMimeType(mimeType: string): boolean {
     ...ALLOWED_FILE_TYPES.videos,
     ...ALLOWED_FILE_TYPES.documents,
     ...ALLOWED_FILE_TYPES.audio,
+    ...ALLOWED_FILE_TYPES.archives,
   ];
   return allAllowed.includes(mimeType);
 }
@@ -87,11 +112,12 @@ export async function verifyFileSignature(file: File): Promise<boolean> {
 /**
  * Get file category
  */
-export function getFileCategory(mimeType: string): 'image' | 'video' | 'document' | 'audio' | 'unknown' {
+export function getFileCategory(mimeType: string): 'image' | 'video' | 'document' | 'audio' | 'archive' | 'unknown' {
   if ((ALLOWED_FILE_TYPES.images as readonly string[]).includes(mimeType)) return 'image';
   if ((ALLOWED_FILE_TYPES.videos as readonly string[]).includes(mimeType)) return 'video';
   if ((ALLOWED_FILE_TYPES.documents as readonly string[]).includes(mimeType)) return 'document';
   if ((ALLOWED_FILE_TYPES.audio as readonly string[]).includes(mimeType)) return 'audio';
+  if ((ALLOWED_FILE_TYPES.archives as readonly string[]).includes(mimeType)) return 'archive';
   return 'unknown';
 }
 
@@ -184,18 +210,15 @@ export async function validateBatch(files: File[]): Promise<{
 }
 
 /**
- * Create file metadata for transfer
+ * Create file metadata for transfer.
+ * The integrity hash (chain hash of chunk checksums) is computed during sending
+ * and delivered in the file_complete message — not here — so we avoid reading
+ * the entire file into memory twice.
  */
 export async function createFileMetadata(file: File): Promise<FileMetadata> {
   const sanitizedName = sanitizeFileName(file.name);
   const totalChunks = Math.ceil(file.size / FILE_CONSTANTS.CHUNK_SIZE);
-  
-  // Generate file hash (optional, for verification)
-  // Note: This can be slow for large files, so we only hash first chunk
-  const firstChunk = file.slice(0, FILE_CONSTANTS.CHUNK_SIZE);
-  const firstChunkBuffer = await firstChunk.arrayBuffer();
-  const hash = await generateChecksum(firstChunkBuffer);
-  
+
   return {
     id: generateFileId(),
     name: file.name,
@@ -204,7 +227,6 @@ export async function createFileMetadata(file: File): Promise<FileMetadata> {
     type: file.type || 'application/octet-stream',
     lastModified: file.lastModified,
     totalChunks,
-    hash,
   };
 }
 
@@ -274,13 +296,16 @@ export function generateImagePreview(file: File, maxSize: number = 200): Promise
  */
 export function getFileIcon(mimeType: string): string {
   const category = getFileCategory(mimeType);
-  
+
   switch (category) {
     case 'image': return '🖼️';
     case 'video': return '🎬';
     case 'audio': return '🎵';
-    case 'document': 
+    case 'archive': return '🗜️';
+    case 'document':
       if (mimeType === 'application/pdf') return '📄';
+      if (mimeType.includes('spreadsheet') || mimeType.includes('excel') || mimeType === 'text/csv') return '📊';
+      if (mimeType.includes('presentation') || mimeType.includes('powerpoint')) return '📊';
       return '📝';
     default: return '📁';
   }
