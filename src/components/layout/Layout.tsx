@@ -111,9 +111,14 @@ export function Layout({ children }: LayoutProps) {
               </div>
 
               {/* Copyright */}
-              <p className="text-sm text-slate-600">
-                No data stored. Files transfer directly between devices.
-              </p>
+              <div className="flex items-center gap-3">
+                <p className="text-sm text-slate-600">
+                  No data stored. Files transfer directly between devices.
+                </p>
+                <span className="text-xs text-slate-700 font-mono border border-slate-800 rounded px-1.5 py-0.5">
+                  v1.1
+                </span>
+              </div>
             </div>
           </div>
         </footer>

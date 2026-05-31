@@ -234,45 +234,67 @@ export function SenderView() {
 
       const blocked = ["exe", "bat", "cmd", "sh", "ps1", "msi", "dll", "scr", "js", "vbs"];
       const processedFiles: FileWithPreview[] = [];
-      let skippedCount = 0;
+      let tooLargeCount = 0;
+      let blockedCount = 0;
 
-      // Process in chunks of 10 — yields to the main thread between chunks so
-      // iOS Safari doesn't kill the page for blocking too long (common with 100+ photos)
-      const CHUNK = 10;
-      for (let i = 0; i < files.length; i += CHUNK) {
-        const chunk = files.slice(i, i + CHUNK);
+      try {
+        // Process in chunks of 10 — yields to the main thread between chunks so
+        // iOS Safari doesn't kill the page for blocking too long (common with 100+ photos/videos)
+        const CHUNK = 10;
+        for (let i = 0; i < files.length; i += CHUNK) {
+          const chunk = files.slice(i, i + CHUNK);
 
-        for (const file of chunk) {
-          const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
-          if (file.size > 2 * 1024 * 1024 * 1024 || file.size === 0 || blocked.includes(ext)) {
-            skippedCount++;
-            continue;
+          for (const file of chunk) {
+            const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
+
+            if (blocked.includes(ext)) {
+              blockedCount++;
+              continue;
+            }
+
+            // size === 0 on iOS can mean the video is still being exported from the
+            // photo library — treat it as valid and let the send-time validation catch real issues
+            if (file.size > 2 * 1024 * 1024 * 1024) {
+              tooLargeCount++;
+              continue;
+            }
+
+            processedFiles.push(
+              Object.assign(file, {
+                id: generateFileId(),
+                preview: undefined,
+                validationResult: { isValid: true, errors: [], warnings: [] },
+              }) as FileWithPreview
+            );
           }
-          processedFiles.push(
-            Object.assign(file, {
-              id: generateFileId(),
-              preview: undefined,
-              validationResult: { isValid: true, errors: [], warnings: [] },
-            }) as FileWithPreview
-          );
+
+          // Yield to browser + update progress so spinner actually animates
+          setLoadingMessage(`Processing ${Math.min(i + CHUNK, fileCount)}/${fileCount} files...`);
+          await new Promise<void>(resolve => setTimeout(resolve, 0));
         }
-
-        // Yield to browser + update progress so spinner actually animates
-        setLoadingMessage(`Processing ${Math.min(i + CHUNK, fileCount)}/${fileCount} files...`);
-        await new Promise<void>(resolve => setTimeout(resolve, 0));
+      } catch {
+        toast.error("Failed to add files", "Please try selecting fewer files at once");
+      } finally {
+        setIsLoadingFiles(false);
+        setFilesBeingAdded(0);
+        setLoadingMessage("");
       }
 
-      if (skippedCount > 0) {
-        toast.warning(`${skippedCount} file(s) skipped`, "Some files were too large or invalid");
+      if (tooLargeCount > 0) {
+        toast.warning(
+          `${tooLargeCount} file(s) too large`,
+          "Videos over 2 GB cannot be sent — try trimming or compressing them first"
+        );
+      }
+      if (blockedCount > 0) {
+        toast.warning(`${blockedCount} file(s) blocked`, "Executable file types are not allowed");
       }
 
-      setSelectedFiles(prev => [...prev, ...processedFiles]);
-      setIsLoadingFiles(false);
-      setFilesBeingAdded(0);
-      setLoadingMessage("");
-
-      if (processedFiles.length > 5) {
-        toast.success(`${processedFiles.length} files added`, "Ready to send");
+      if (processedFiles.length > 0) {
+        setSelectedFiles(prev => [...prev, ...processedFiles]);
+        if (processedFiles.length > 5) {
+          toast.success(`${processedFiles.length} files added`, "Ready to send");
+        }
       }
     },
     [toast],
