@@ -51,6 +51,35 @@ interface UseWebRTCReturn {
   isHost: boolean;
 }
 
+// Module-level cache — survives React remounts within the same page session
+let cachedIceServers: RTCIceServer[] | null = null;
+let iceCacheTime = 0;
+const ICE_CACHE_DURATION = 23 * 60 * 60 * 1000; // 23h (Cloudflare TTL is 24h)
+
+const FALLBACK_ICE: RTCIceServer[] = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+];
+
+async function getTurnIceServers(): Promise<RTCIceServer[]> {
+  const now = Date.now();
+  if (cachedIceServers && now - iceCacheTime < ICE_CACHE_DURATION) {
+    return cachedIceServers;
+  }
+  try {
+    const res = await fetch('/api/turn-credentials', { method: 'POST' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json() as { iceServers?: RTCIceServer[] };
+    if (!data.iceServers?.length) throw new Error('Empty ICE response');
+    cachedIceServers = data.iceServers;
+    iceCacheTime = now;
+    return cachedIceServers;
+  } catch {
+    // Fall back to STUN-only — still works for ~80% of users
+    return FALLBACK_ICE;
+  }
+}
+
 export function useWebRTC(options: UseWebRTCOptions): UseWebRTCReturn {
   const {
     mode,
@@ -405,23 +434,19 @@ export function useWebRTC(options: UseWebRTCOptions): UseWebRTCReturn {
   }, [mode, sendMessage, startHeartbeat, cleanup, updateState, connectionInfo.peerId]); // No callback deps - using refs
 
   // Initialize peer connection - let PeerJS generate ID for better compatibility
-  const initializePeer = useCallback((peerId: string): Promise<Peer> => {
+  const initializePeer = useCallback(async (peerId: string): Promise<Peer> => {
     const myGeneration = ++connectionGenerationRef.current;
+    const iceServers = await getTurnIceServers();
 
-    return new Promise((resolve, reject) => {
+    return new Promise<Peer>((resolve, reject) => {
       // Add prefix to make IDs more unique and avoid collisions
       const fullPeerId = `st-${peerId.toLowerCase()}`;
-      
+
       logger.log('[PeerJS] Attempting to connect with ID:', fullPeerId);
-      
+
       const peer = new Peer(fullPeerId, {
         debug: import.meta.env.DEV ? 2 : 0,
-        config: {
-          iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' },
-          ],
-        },
+        config: { iceServers },
       });
 
       const timeout = setTimeout(() => {
