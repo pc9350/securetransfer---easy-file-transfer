@@ -217,96 +217,63 @@ export function SenderView() {
   }, [searchParams, isConnected, connectionInfo.state]);
 
   const processFiles = useCallback(
-    (fileList: FileList | File[]) => {
-      if (!fileList || fileList.length === 0) {
-        return;
-      }
+    async (fileList: FileList | File[]) => {
+      if (!fileList || fileList.length === 0) return;
 
-      // Copy files array immediately - FileList can become stale
+      // Copy immediately — FileList becomes stale after the event
       const files = Array.from(fileList);
       const fileCount = files.length;
 
-      // Show loading with count
       setIsLoadingFiles(true);
       setFilesBeingAdded(fileCount);
-      setLoadingMessage(
-        `Adding ${fileCount} ${fileCount === 1 ? "file" : "files"}...`,
-      );
+      setLoadingMessage(`Adding ${fileCount} ${fileCount === 1 ? "file" : "files"}...`);
 
-      // Reset input FIRST
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
       }
 
-      // Process files with slight delay to let UI update
-      requestAnimationFrame(() => {
-        const processedFiles: FileWithPreview[] = [];
-        let skippedCount = 0;
-        let processed = 0;
+      const blocked = ["exe", "bat", "cmd", "sh", "ps1", "msi", "dll", "scr", "js", "vbs"];
+      const processedFiles: FileWithPreview[] = [];
+      let skippedCount = 0;
 
-        for (const file of files) {
-          processed++;
+      // Process in chunks of 10 — yields to the main thread between chunks so
+      // iOS Safari doesn't kill the page for blocking too long (common with 100+ photos)
+      const CHUNK = 10;
+      for (let i = 0; i < files.length; i += CHUNK) {
+        const chunk = files.slice(i, i + CHUNK);
 
-          // Update loading message for large batches
-          if (fileCount > 10 && processed % 5 === 0) {
-            setLoadingMessage(`Processing ${processed}/${fileCount} files...`);
-          }
-
-          // Quick validation
-          const ext = file.name.split(".").pop()?.toLowerCase() || "";
-          const blocked = [
-            "exe",
-            "bat",
-            "cmd",
-            "sh",
-            "ps1",
-            "msi",
-            "dll",
-            "scr",
-            "js",
-            "vbs",
-          ];
-
-          if (
-            file.size > 2 * 1024 * 1024 * 1024 ||
-            file.size === 0 ||
-            blocked.includes(ext)
-          ) {
+        for (const file of chunk) {
+          const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
+          if (file.size > 2 * 1024 * 1024 * 1024 || file.size === 0 || blocked.includes(ext)) {
             skippedCount++;
             continue;
           }
-
-          // Extend the File object with additional properties
-          const fileWithPreview = Object.assign(file, {
-            id: generateFileId(),
-            preview: undefined,
-            validationResult: { isValid: true, errors: [], warnings: [] },
-          }) as FileWithPreview;
-
-          processedFiles.push(fileWithPreview);
-        }
-
-        if (skippedCount > 0) {
-          toast.warning(
-            `${skippedCount} file(s) skipped`,
-            "Some files were too large or invalid",
+          processedFiles.push(
+            Object.assign(file, {
+              id: generateFileId(),
+              preview: undefined,
+              validationResult: { isValid: true, errors: [], warnings: [] },
+            }) as FileWithPreview
           );
         }
 
-        // Update state with new files
-        setSelectedFiles((prev) => [...prev, ...processedFiles]);
-        setIsLoadingFiles(false);
-        setFilesBeingAdded(0);
-        setLoadingMessage("");
+        // Yield to browser + update progress so spinner actually animates
+        setLoadingMessage(`Processing ${Math.min(i + CHUNK, fileCount)}/${fileCount} files...`);
+        await new Promise<void>(resolve => setTimeout(resolve, 0));
+      }
 
-        // Show success message for large batches
-        if (processedFiles.length > 5) {
-          toast.success(
-            `${processedFiles.length} files added`,
-            "Ready to send",
-          );
-        }
-      });
+      if (skippedCount > 0) {
+        toast.warning(`${skippedCount} file(s) skipped`, "Some files were too large or invalid");
+      }
+
+      setSelectedFiles(prev => [...prev, ...processedFiles]);
+      setIsLoadingFiles(false);
+      setFilesBeingAdded(0);
+      setLoadingMessage("");
+
+      if (processedFiles.length > 5) {
+        toast.success(`${processedFiles.length} files added`, "Ready to send");
+      }
     },
     [toast],
   );
