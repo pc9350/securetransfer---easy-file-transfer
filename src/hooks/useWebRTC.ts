@@ -628,9 +628,10 @@ export function useWebRTC(options: UseWebRTCOptions): UseWebRTCReturn {
         const request: PeerMessage = {
           type: 'connection_request',
           timestamp: Date.now(),
-          payload: { 
+          payload: {
             peerId: clientId,
             deviceInfo: navigator.userAgent,
+            timestamp: Date.now(),
           },
         };
         conn.send(request);

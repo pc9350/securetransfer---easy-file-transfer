@@ -113,6 +113,7 @@ export interface PeerMessage {
 }
 
 export interface ConnectionRequestPayload {
+  peerId: string;
   deviceInfo: string;
   timestamp: number;
 }
