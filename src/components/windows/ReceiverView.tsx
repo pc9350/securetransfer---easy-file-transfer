@@ -117,10 +117,11 @@ export function ReceiverView() {
       toast.success('Device connected', 'Ready to receive files');
     },
     onDisconnected: () => {
-      // Only show if we were actually connected to a peer
+      // Keep any received files so the user can still download them — the sender
+      // often disconnects right after a transfer completes. Clearing here would
+      // wipe files before they're saved.
       if (receivedFiles.length > 0) {
-        toast.info('Device disconnected');
-        setReceivedFiles([]);
+        toast.info('Sender disconnected', 'Your received files are still available to download below');
       }
     },
     onError: (error) => {
@@ -218,7 +219,38 @@ export function ReceiverView() {
 
       {/* Main content */}
       <div className="glass-card">
-        {!isConnected ? (
+        {!isConnected && receivedFiles.length > 0 ? (
+          // Session ended but files were received — keep them downloadable
+          <div className="space-y-6">
+            <div className="text-center">
+              <div className="w-14 h-14 mx-auto mb-3 rounded-full bg-success-500/10 flex items-center justify-center">
+                <svg className="w-7 h-7 text-success-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+              </div>
+              <h3 className="text-lg font-medium text-slate-200 mb-1">Transfer Complete</h3>
+              <p className="text-slate-500 text-sm">
+                The session has ended. Download your files below before leaving — they'll be lost when you close this page.
+              </p>
+            </div>
+
+            <FileGallery
+              files={receivedFiles}
+              onPreview={(file) => {
+                setPreviewFile({
+                  name: file.name,
+                  size: file.size,
+                  type: file.type,
+                  blob: file.blob,
+                });
+              }}
+            />
+
+            <Button onClick={() => window.location.reload()} variant="secondary" className="w-full">
+              Start New Session
+            </Button>
+          </div>
+        ) : !isConnected ? (
           // Waiting for connection
           <div className="space-y-6">
             {/* Connection Status */}
@@ -321,7 +353,7 @@ export function ReceiverView() {
                 </li>
                 <li className="flex gap-2">
                   <span className="text-primary-400 font-semibold">4.</span>
-                  Files will download automatically
+                  Save the received files — individually or all at once as a ZIP
                 </li>
               </ol>
             </div>

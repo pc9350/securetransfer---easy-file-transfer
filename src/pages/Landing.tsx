@@ -123,7 +123,7 @@ export default function Landing() {
               Send Files
             </h3>
             <p className="text-slate-400 text-sm">
-              Select photos, videos, or documents and tap send. Files download automatically on the receiver
+              Select photos, videos, or documents and tap send. The receiver saves them individually or as a ZIP
             </p>
           </div>
         </div>
